@@ -1,12 +1,3 @@
-"""
-main.py — Оркестратор AI/ML Radar Agent.
-
-Главный цикл:
-  parse -> вектор -> проверка дублей (косинусное сходство) -> analyze (PydanticAI) -> save
-
-Парсер и БД — МОКИ, команда заменит их реальными модулями с той же сигнатурой.
-"""
-
 import logging
 
 import numpy as np

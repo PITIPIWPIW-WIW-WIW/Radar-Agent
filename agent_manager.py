@@ -1,8 +1,3 @@
-"""
-Agent Manager — модуль ИИ-агента для анализа статей.
-Использует PydanticAI для гарантированного структурированного вывода (summary + tags).
-"""
-
 import logging
 
 import httpx
@@ -37,12 +32,6 @@ SYSTEM_PROMPT = """
 Отвечай строго в структурированном виде, без лишнего текста.
 """
 
-# В сети пользователя HTTP/2-запросы к api.mistral.ai зависают намертво
-# (похоже на DPI-блокировку), а HTTP/1.1 проходит нормально.
-# Поэтому форсируем HTTP/1.1 и отключаем HTTP/2 в клиенте.
-# В сети пользователя HTTP/2-запросы к api.mistral.ai зависают намертво
-# (похоже на DPI-блокировку), а HTTP/1.1 проходит нормально.
-# Плюс IPv6 недоступен/блокируется — форсируем IPv4 через local_address.
 _transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
 _http_client = httpx.AsyncClient(http1=True, http2=False, timeout=30.0, transport=_transport)
 

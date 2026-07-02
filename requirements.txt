@@ -1,0 +1,5 @@
+pydantic-ai
+pydantic
+numpy
+python-dotenv
+tenacity

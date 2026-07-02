@@ -1,5 +1,6 @@
-pydantic-ai
+pydantic-ai[mistral]
 pydantic
 numpy
 python-dotenv
 tenacity
+httpx

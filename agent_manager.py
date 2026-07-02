@@ -1,8 +1,15 @@
+"""
+Agent Manager — модуль ИИ-агента для анализа статей.
+Использует PydanticAI для гарантированного структурированного вывода (summary + tags).
+"""
+
 import logging
 
+import httpx
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.models.mistral import MistralModel
+from pydantic_ai.providers.mistral import MistralProvider
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -30,11 +37,23 @@ SYSTEM_PROMPT = """
 Отвечай строго в структурированном виде, без лишнего текста.
 """
 
-model = MistralModel(config.MISTRAL_MODEL_NAME, api_key=config.MISTRAL_API_KEY)
+# В сети пользователя HTTP/2-запросы к api.mistral.ai зависают намертво
+# (похоже на DPI-блокировку), а HTTP/1.1 проходит нормально.
+# Поэтому форсируем HTTP/1.1 и отключаем HTTP/2 в клиенте.
+# В сети пользователя HTTP/2-запросы к api.mistral.ai зависают намертво
+# (похоже на DPI-блокировку), а HTTP/1.1 проходит нормально.
+# Плюс IPv6 недоступен/блокируется — форсируем IPv4 через local_address.
+_transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
+_http_client = httpx.AsyncClient(http1=True, http2=False, timeout=30.0, transport=_transport)
+
+model = MistralModel(
+    config.MISTRAL_MODEL_NAME,
+    provider=MistralProvider(api_key=config.MISTRAL_API_KEY, http_client=_http_client),
+)
 
 article_agent = Agent(
     model=model,
-    result_type=ArticleAnalysis,
+    output_type=ArticleAnalysis,
     system_prompt=SYSTEM_PROMPT,
 )
 
@@ -78,9 +97,7 @@ def analyze_article(title: str, text: str) -> ArticleAnalysis:
     prompt = f"Заголовок: {title}\n\nТекст статьи:\n{text}"
     try:
         result = _call_agent(prompt)
-        # В некоторых версиях PydanticAI поле называется .output вместо .data —
-        # если ловишь AttributeError, замени .data на .output.
-        return result.data
+        return result.output
     except Exception as e:
         logger.error(f"Ошибка анализа статьи '{title}': {e}")
         raise AnalysisError(f"Не удалось проанализировать статью '{title}': {e}") from e

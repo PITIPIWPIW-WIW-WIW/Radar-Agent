@@ -32,8 +32,14 @@ SYSTEM_PROMPT = """
 Отвечай строго в структурированном виде, без лишнего текста.
 """
 
-_transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
-_http_client = httpx.AsyncClient(http1=True, http2=False, timeout=30.0, transport=_transport)
+
+if not config.MISTRAL_API_KEY:
+    raise RuntimeError(
+        "MISTRAL_API_KEY не найден. Создай файл .env на основе .env.example "
+        "и укажи там свой ключ."
+    )
+
+_http_client = httpx.AsyncClient(timeout=30.0)
 
 model = MistralModel(
     config.MISTRAL_MODEL_NAME,

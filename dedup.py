@@ -60,7 +60,7 @@ def _save_cache(cache: dict) -> None:
 
 def text_to_vector(text: str) -> np.ndarray:
     """
-    Реальный эмбеддинг текста через sentence-transformers (замена
+    Реальный эмбеддинг текста через fastembed (замена
     прежней хэш-заглушки, Sprint 3).
 
     Результат кэшируется на диск по sha256-хэшу текста — если статья
@@ -73,6 +73,7 @@ def text_to_vector(text: str) -> np.ndarray:
         _cache = _load_cache()
 
     key = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
     if key in _cache:
         return np.array(_cache[key], dtype=np.float32)
 

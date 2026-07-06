@@ -1,3 +1,8 @@
+"""
+Agent Manager — модуль ИИ-агента для анализа статей.
+Использует PydanticAI для гарантированного структурированного вывода (summary + tags).
+"""
+
 import logging
 
 import httpx
@@ -32,25 +37,47 @@ SYSTEM_PROMPT = """
 Отвечай строго в структурированном виде, без лишнего текста.
 """
 
+# Модель и клиент создаются лениво (через get_model()), а не на уровне модуля.
+# Причина: другие модули (например kaggle_fetcher.py) импортируют модель
+# отсюда, чтобы не плодить отдельную настройку provider/http_client — но
+# сам факт импорта не должен требовать рабочий MISTRAL_API_KEY. Ключ нужен
+# только в момент реального вызова Mistral, а не на этапе "просто загрузили
+# модуль" (тот же принцип, что применили в config.py в Sprint 2).
+_model = None
+_article_agent = None
 
-if not config.MISTRAL_API_KEY:
-    raise RuntimeError(
-        "MISTRAL_API_KEY не найден. Создай файл .env на основе .env.example "
-        "и укажи там свой ключ."
-    )
 
-_http_client = httpx.AsyncClient(timeout=30.0)
+def get_model() -> MistralModel:
+    """
+    Лениво создаёт и кэширует MistralModel с общим http_client (HTTP/1.1,
+    таймаут 30с). Другие модули (например kaggle_fetcher.py) должны брать
+    модель через этот вызов, а не импортировать готовый объект — так они
+    не тянут за собой требование валидного ключа при простом импорте.
+    """
+    global _model
+    if _model is None:
+        if not config.MISTRAL_API_KEY:
+            raise RuntimeError(
+                "MISTRAL_API_KEY не найден. Создай файл .env на основе .env.example "
+                "и укажи там свой ключ."
+            )
+        http_client = httpx.AsyncClient(timeout=30.0)
+        _model = MistralModel(
+            config.MISTRAL_MODEL_NAME,
+            provider=MistralProvider(api_key=config.MISTRAL_API_KEY, http_client=http_client),
+        )
+    return _model
 
-model = MistralModel(
-    config.MISTRAL_MODEL_NAME,
-    provider=MistralProvider(api_key=config.MISTRAL_API_KEY, http_client=_http_client),
-)
 
-article_agent = Agent(
-    model=model,
-    output_type=ArticleAnalysis,
-    system_prompt=SYSTEM_PROMPT,
-)
+def _get_article_agent() -> Agent:
+    global _article_agent
+    if _article_agent is None:
+        _article_agent = Agent(
+            model=get_model(),
+            output_type=ArticleAnalysis,
+            system_prompt=SYSTEM_PROMPT,
+        )
+    return _article_agent
 
 
 class AnalysisError(Exception):
@@ -78,7 +105,7 @@ def _is_rate_limit_error(exception: BaseException) -> bool:
 )
 def _call_agent(prompt: str):
     """Внутренний вызов агента с retry+backoff только на 429 (rate limit)."""
-    return article_agent.run_sync(prompt)
+    return _get_article_agent().run_sync(prompt)
 
 
 def analyze_article(title: str, text: str) -> ArticleAnalysis:

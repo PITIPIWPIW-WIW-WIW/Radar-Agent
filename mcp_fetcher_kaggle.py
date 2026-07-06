@@ -13,7 +13,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from dotenv import load_dotenv
 
-from agent_manager import model
+from agent_manager import get_model
 
 load_dotenv()
 logger = logging.getLogger("mcp_fetcher")
@@ -40,25 +40,37 @@ class SelectionResult(BaseModel):
     )
 
 
-selector_agent = Agent(
-    model=model,
-    output_type=SelectionResult,
-    system_prompt=(
-        "Ты — технический аналитик, который отбирает материалы для базы знаний по ИИ.\n\n"
-        f"Тебе дадут JSON-список кандидатов (датасеты и модели с Kaggle), у каждого "
-        "есть поля id, type, title, full_text. Список уже предварительно отсортирован "
-        "по свежести — все кандидаты достаточно новые, свежесть можно не учитывать. "
-        f"Отбери до {FINAL_MATERIALS_COUNT} материалов, наиболее релевантных строго "
-        "тематикам AI, ML, DL и DS (искусственный интеллект, машинное обучение, "
-        "глубокое обучение, наука о данных). Материалы вне этих тематик игнорируй.\n\n"
-        "Твоя ЕДИНСТВЕННАЯ задача — вернуть список id выбранных материалов. "
-        "Текст менять, переводить или пересказывать не нужно — он останется "
-        "в оригинальном виде без твоего участия.\n\n"
-        f"Если подходящих материалов меньше {FINAL_MATERIALS_COUNT} — верни столько, "
-        "сколько нашлось. Если ни один материал не подходит — верни пустой список. "
-        "Не выдумывай факты, если данных недостаточно."
-    )
-)
+# selector_agent создаётся лениво (не на уровне модуля) — иначе простой
+# импорт kaggle_fetcher.py (например, для тестов _parse_markdown_list или
+# _extract_ref_parts, которым Mistral вообще не нужен) требовал бы рабочий
+# MISTRAL_API_KEY. Ключ нужен только когда реально доходим до тематического
+# отбора через LLM.
+_selector_agent = None
+
+
+def _get_selector_agent() -> Agent:
+    global _selector_agent
+    if _selector_agent is None:
+        _selector_agent = Agent(
+            model=get_model(),
+            output_type=SelectionResult,
+            system_prompt=(
+                "Ты — технический аналитик, который отбирает материалы для базы знаний по ИИ.\n\n"
+                f"Тебе дадут JSON-список кандидатов (датасеты и модели с Kaggle), у каждого "
+                "есть поля id, type, title, full_text. Список уже предварительно отсортирован "
+                "по свежести — все кандидаты достаточно новые, свежесть можно не учитывать. "
+                f"Отбери до {FINAL_MATERIALS_COUNT} материалов, наиболее релевантных строго "
+                "тематикам AI, ML, DL и DS (искусственный интеллект, машинное обучение, "
+                "глубокое обучение, наука о данных). Материалы вне этих тематик игнорируй.\n\n"
+                "Твоя ЕДИНСТВЕННАЯ задача — вернуть список id выбранных материалов. "
+                "Текст менять, переводить или пересказывать не нужно — он останется "
+                "в оригинальном виде без твоего участия.\n\n"
+                f"Если подходящих материалов меньше {FINAL_MATERIALS_COUNT} — верни столько, "
+                "сколько нашлось. Если ни один материал не подходит — верни пустой список. "
+                "Не выдумывай факты, если данных недостаточно."
+            )
+        )
+    return _selector_agent
 
 
 KAGGLE_SERVER_PARAMS = StdioServerParameters(
@@ -281,7 +293,7 @@ async def _collect_model_candidates(session: ClientSession, query: str, limit: i
     return candidates
 
 
-# --- Публичный интерфейс модуля ---
+# --- Публичный интерфейс модуля (асинхронный) ---
 
 async def fetch_materials_via_mcp(query: str = "machine learning") -> list[dict]:
     """
@@ -332,7 +344,7 @@ async def fetch_materials_via_mcp(query: str = "machine learning") -> list[dict]
                         "Вот список кандидатов в формате JSON. Отбери подходящие по теме:\n\n"
                         f"{json.dumps(llm_input, ensure_ascii=False)}"
                     )
-                    result = await selector_agent.run(prompt)
+                    result = await _get_selector_agent().run(prompt)
 
                     # dict.fromkeys сохраняет порядок и убирает возможные дубликаты id,
                     # которые LLM ничем не гарантирует не повторить
@@ -359,6 +371,30 @@ async def fetch_materials_via_mcp(query: str = "machine learning") -> list[dict]
         raise
 
     return articles_payload
+
+
+# --- Синхронная обёртка под контракт stream_all_new_articles() ---
+
+def stream_kaggle_articles(query: str = "machine learning"):
+    """
+    Синхронный генератор-адаптер над fetch_materials_via_mcp().
+
+    fetch_materials_via_mcp — async по необходимости (MCP-клиент сам
+    поднимает подпроцесс и общается с ним через asyncio), но внутри себя
+    и так не стримит данные: сначала собирает всех кандидатов, потом одним
+    вызовом отправляет их в LLM и возвращает готовый список (максимум
+    FINAL_MATERIALS_COUNT штук). Поэтому оборачивание в generator здесь
+    ничего не теряет по сравнению с текущим поведением — просто даёт
+    синхронному main.py дёргать этот источник так же, как остальные:
+
+        def stream_all_new_articles():
+            yield from stream_github_articles()
+            yield from stream_arxiv_articles()
+            yield from stream_kaggle_articles()
+    """
+    articles = asyncio.run(fetch_materials_via_mcp(query))
+    for article in articles:
+        yield article
 
 
 if __name__ == "__main__":

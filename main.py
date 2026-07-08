@@ -3,9 +3,11 @@ import logging
 import numpy as np
 
 import config
-
 from dedup import text_to_vector, is_duplicate
 from agent_manager import analyze_article, AnalysisError
+from database import init_db, get_all_vectors, save_vector, save_article, delete_old_vectors
+from FetcherHF import stream_hf_articles
+from FetcherHFDatasets import stream_hf_datasets
 
 
 def setup_logging():
@@ -28,10 +30,10 @@ def setup_logging():
 logger = logging.getLogger("main")
 
 
-# моки над будет заменить на реальные парсер и БД в будущем, но сигнатура функций останется той же.
+#Источники статей 
 
-def stream_all_new_articles():
-    """Мок-парсер: yield-ит по одному словарю статьи вида {title, text, source_url}."""
+def _fake_articles():
+    """Демо-статьи — оставлены для быстрой проверки пайплайна без сети/MCP."""
     fake_articles = [
         {
             "title": "Новый подход к RAG-системам",
@@ -48,25 +50,48 @@ def stream_all_new_articles():
         yield article
 
 
-def get_all_vectors() -> list[np.ndarray]:
-    """Мок БД: возвращает пустой список векторов (как будто база пуста)."""
-    return []
+def stream_all_new_articles():
+    """
+    Объединяет все источники в один поток статей вида {title, text, source_url}.
+
+    Каждый реальный источник обёрнут в try/except: если конкретный источник
+    упал (нет uvx/MCP-сервера, сеть легла, нет ключа) — остальные всё равно
+    отрабатывают, пайплайн не падает целиком из-за одного источника.
+    """
+    yield from _fake_articles()
+
+    try:
+        yield from stream_hf_articles("LLM")
+    except Exception as e:
+        logger.error(f"Источник Hugging Face (модели) недоступен: {e}")
+
+    try:
+        yield from stream_hf_datasets("machine learning")
+    except Exception as e:
+        logger.error(f"Источник Hugging Face (датасеты) недоступен: {e}")
+
+    # GitHub / arXiv / Papers with Code — команда добавит по этой же схеме:
+    # try:
+    #     yield from stream_github_articles()
+    # except Exception as e:
+    #     logger.error(f"Источник GitHub недоступен: {e}")
 
 
-def save_article(article: dict) -> None:
-    """Мок БД: вместо записи в SQLite — логирует итоговый payload."""
-    logger.info(f"[SAVE] {article['title']} | tags={article['tags']}")
-
-
-#  Векторизация (заглушка, заменить на реальные эмбеддинги Mistral) 
-
-#  Главный цикл 
+# ---------- Главный цикл ----------
 
 def main():
     setup_logging()
 
-    # 1. ОДИН РАЗ выгружаем все векторы из БД в оперативную память
-    memory_vectors: list[np.ndarray] = get_all_vectors()
+    # Создаёт таблицы, если их ещё нет (безопасно вызывать при каждом запуске)
+    init_db()
+
+    # Чистим только устаревший кэш векторов-дублей (не сами статьи —
+    # они должны копиться со всех прогонов, это база знаний, а не разовый снимок)
+    delete_old_vectors(days=14)
+
+    # 1. ОДИН РАЗ выгружаем все векторы из БД в оперативную память.
+    # get_all_vectors() — генератор, оборачиваем в list() явно, как договорились.
+    memory_vectors: list[np.ndarray] = [np.array(v, dtype=np.float32) for v in get_all_vectors()]
     logger.info(f"Загружено векторов из БД: {len(memory_vectors)}")
 
     processed, skipped, failed = 0, 0, 0
@@ -77,7 +102,7 @@ def main():
         text = article["text"]
         source_url = article["source_url"]
 
-        # 3. Текст -> вектор
+        # 3. Текст -> вектор (реальные эмбеддинги через fastembed, Sprint 3)
         new_vector = text_to_vector(text)
 
         # 4. Проверка на дубликат (со всей БД + со статьями, добавленными в этом же цикле)
@@ -94,20 +119,21 @@ def main():
             failed += 1
             continue  # статья не сохраняется, но цикл не падает
 
-        # 6. Формируем итоговый payload под схему БД
+        # 6. Сохраняем вектор ОТДЕЛЬНО от статьи — по контракту database.py
+        # save_vector/save_article это две независимые таблицы, без text_vector
+        # внутри payload статьи (в отличие от более раннего черновика).
+        save_vector(new_vector.tolist())
+
         payload = {
             "title": title,
             "summary": analysis.summary,
             "source_url": source_url,
-            "tags": ",".join(analysis.tags),
-            "text_vector": new_vector.tolist(),  # для TEXT-поля как JSON-строка
+            "tags": analysis.tags,  # список строк — database.py сам делает json.dumps
         }
-
-        # 7. Сохраняем в БД
         save_article(payload)
         processed += 1
 
-        # 8. КРИТ ШАГ: пополняем memory_vectors,
+        # 8. КРИТИЧЕСКИЙ ШАГ: пополняем memory_vectors,
         #    чтобы следующие статьи в этом же цикле сравнивались
         #    и с базой, и с только что спарсенными
         memory_vectors.append(new_vector)

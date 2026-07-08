@@ -8,3 +8,4 @@ fastembed
 mcp
 langdetect
 pytest
+playwright

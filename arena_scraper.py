@@ -4,6 +4,8 @@ import time
 import random
 from playwright.sync_api import sync_playwright
 
+from database import init_db, save_leaderboard_data
+
 # ==========================================
 # ЧАСТЬ 1: СКРАПЕР (Получение HTML-кода)
 # ==========================================
@@ -207,8 +209,12 @@ def collect_all_categories(category_urls):
     return final_snapshot
 
 def save_to_db(data):
-    print("\n--- ИТОГОВЫЙ РЕЗУЛЬТАТ ---")
-    print(json.dumps(data, indent=2, ensure_ascii=False))
+    # init_db() создаёт таблицы (включая leaderboard), если их ещё нет —
+    # безопасно вызывать даже если main.py ещё не запускался и БД не создана.
+    init_db()
+    save_leaderboard_data(data)
+    print(f"\n[УСПЕХ] Сохранено в БД: {sum(len(v) for v in data['categories'].values())} строк "
+          f"по {len(data['categories'])} категориям (снимок от {data['fetched_at']})")
 
 def main():
     # Оставили только 11 стабильных категорий (убрали agent)
@@ -226,7 +232,7 @@ def main():
         "video-edit": "https://arena.ai/leaderboard/video-edit"
     }
 
-    print(f"Запуск скрапера для {len(category_urls)} категорий...")
+    print(f"🚀 Запуск скрапера для {len(category_urls)} категорий...")
 
     data = collect_all_categories(category_urls)
     save_to_db(data)

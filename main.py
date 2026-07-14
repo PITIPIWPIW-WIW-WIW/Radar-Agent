@@ -8,6 +8,8 @@ from agent_manager import analyze_article, AnalysisError
 from database import init_db, get_all_vectors, save_vector, save_article, delete_old_vectors
 from FetcherHF import stream_hf_articles
 from FetcherHFDatasets import stream_hf_datasets
+from mcp_fetcher_arxiv import stream_arxiv_articles
+from github_fetcher import stream_github_articles
 
 
 def setup_logging():
@@ -30,7 +32,7 @@ def setup_logging():
 logger = logging.getLogger("main")
 
 
-#Источники статей 
+#Источники статей
 
 def _fake_articles():
     """Демо-статьи — оставлены для быстрой проверки пайплайна без сети/MCP."""
@@ -70,14 +72,18 @@ def stream_all_new_articles():
     except Exception as e:
         logger.error(f"Источник Hugging Face (датасеты) недоступен: {e}")
 
-    # GitHub / arXiv / Papers with Code — команда добавит по этой же схеме:
-    # try:
-    #     yield from stream_github_articles()
-    # except Exception as e:
-    #     logger.error(f"Источник GitHub недоступен: {e}")
+    try:
+        yield from stream_arxiv_articles("large language models")
+    except Exception as e:
+        logger.error(f"Источник arXiv недоступен: {e}")
+
+    try:
+        yield from stream_github_articles()
+    except Exception as e:
+        logger.error(f"Источник GitHub недоступен: {e}")
 
 
-# ---------- Главный цикл ----------
+# Главный цикл 
 
 def main():
     setup_logging()

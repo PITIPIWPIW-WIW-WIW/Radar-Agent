@@ -232,5 +232,5 @@ if __name__ == "__main__":
     
     print("=== ТЕСТОВЫЙ ЗАПУСК МОДУЛЯ ДАТАСЕТОВ ===")
     res = asyncio.run(fetch_hf_datasets_via_mcp("finance"))
-    print(f"\n✅ Получено датасетов: {len(res)}\n")
+    print(f"\n Получено датасетов: {len(res)}\n")
     print(json.dumps(res, indent=2, ensure_ascii=False))

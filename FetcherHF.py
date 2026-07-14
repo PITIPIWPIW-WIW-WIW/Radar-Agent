@@ -250,5 +250,5 @@ if __name__ == "__main__":
     
     print("=== ТЕСТОВЫЙ ЗАПУСК МОДУЛЯ ===")
     res = asyncio.run(fetch_hf_materials_via_mcp("LLM"))
-    print(f"\n✅ Получено материалов: {len(res)}\n")
+    print(f"\nПолучено материалов: {len(res)}\n")
     print(json.dumps(res, indent=2, ensure_ascii=False))

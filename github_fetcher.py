@@ -23,7 +23,7 @@ logger = logging.getLogger("github_fetcher")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # === ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМА ===
-IS_TEST_MODE = True
+IS_TEST_MODE = False  
 
 
 # === 1. СХЕМА ДЛЯ ИИ-ОТБОРЩИКА ===

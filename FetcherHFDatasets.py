@@ -26,7 +26,7 @@ logger = logging.getLogger("hf_datasets_fetcher")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # === ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМА ===
-IS_TEST_MODE = True
+IS_TEST_MODE = False  
 
 
 # === 1. СХЕМЫ ДЛЯ ИИ-ПЕРЕВОДЧИКА ===

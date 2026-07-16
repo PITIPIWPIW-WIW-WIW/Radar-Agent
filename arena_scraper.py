@@ -232,7 +232,7 @@ def main():
         "video-edit": "https://arena.ai/leaderboard/video-edit"
     }
 
-    print(f"🚀 Запуск скрапера для {len(category_urls)} категорий...")
+    print(f"Запуск скрапера для {len(category_urls)} категорий...")
 
     data = collect_all_categories(category_urls)
     save_to_db(data)

@@ -9,3 +9,8 @@ mcp
 langdetect
 pytest
 playwright
+fastapi
+uvicorn
+streamlit
+requests
+pandas

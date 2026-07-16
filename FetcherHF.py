@@ -28,7 +28,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 # === ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМА ===
 # Установи False, когда команда закончит работу над LLM-агентом
-IS_TEST_MODE = True
+IS_TEST_MODE = False
 
 
 # === 1. СХЕМЫ ДЛЯ ИИ-ПЕРЕВОДЧИКА ===

@@ -8,8 +8,29 @@ from agent_manager import analyze_article, AnalysisError
 from database import init_db, get_all_vectors, save_vector, save_article, delete_old_vectors
 from FetcherHF import stream_hf_articles
 from FetcherHFDatasets import stream_hf_datasets
+from mcp_fetcher_kaggle import stream_kaggle_articles
 from mcp_fetcher_arxiv import stream_arxiv_articles
 from github_fetcher import stream_github_articles
+
+
+class _BenignProactorNoiseFilter(logging.Filter):
+    """
+    На Windows при завершении процесса asyncio иногда пытается отменить уже
+    мёртвую overlapped-операцию чтения из stdio-пайпа MCP-подпроцесса (HF,
+    HF Datasets, arXiv, Kaggle) и падает с WinError 6 "Неверный дескриптор".
+    Это происходит уже ПОСЛЕ того, как конкретный fetcher отработал и данные
+    забраны — просто уборка мусора транспортов идёт после того, как loop этого
+    fetcher'а уже закрыт. К логике/данным отношения не имеет.
+
+    ВАЖНО: это НЕ то же самое, что set_exception_handler() в фетчерах — тот
+    механизм не перехватывает данный конкретный случай, потому что запись идёт
+    через собственный логгер asyncio ("asyncio").error(...) уже после закрытия
+    loop'а, а не через call_exception_handler() того loop'а, где стоит наш
+    обработчик. Подавляем именно на уровне логирования — единственное место,
+    где это гарантированно работает независимо от таймингов.
+    """
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "Cancelling an overlapped future failed" not in record.getMessage()
 
 
 def setup_logging():
@@ -21,6 +42,8 @@ def setup_logging():
             logging.StreamHandler(),
         ],
     )
+    logging.getLogger("asyncio").addFilter(_BenignProactorNoiseFilter())
+
     # Ошибки анализа отдельно пишем в errors.log — удобно смотреть на защите,
     # какие статьи не удалось обработать и почему.
     error_handler = logging.FileHandler(config.ERROR_LOG_FILE, encoding="utf-8")
@@ -82,6 +105,10 @@ def stream_all_new_articles():
     except Exception as e:
         logger.error(f"Источник GitHub недоступен: {e}")
 
+    try:
+        yield from stream_kaggle_articles()
+    except Exception as e:
+        logger.error(f"Источник Kaggle недоступен: {e}")
 
 # Главный цикл 
 

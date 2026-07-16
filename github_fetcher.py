@@ -63,39 +63,42 @@ class MockAgent:
         mock_data = SelectionResult(selected_ids=[test_id])
         return MockRunResult(mock_data)
 
-_github_agent = None
-
 def _get_github_agent():
-    global _github_agent
+    """Реальный агент НЕ кэшируется (см. фикс в agent_manager.get_model()) —
+    иначе синглтон остаётся привязан к закрытому event loop своего
+    asyncio.run() и следующий вызов падает с 'Event loop is closed'."""
     if IS_TEST_MODE:
         return MockAgent()
 
-    if _github_agent is None:
-        _github_agent = Agent(
-            model=get_model(),
-            output_type=SelectionResult,
-            system_prompt=(
-                "Ты — Senior Developer. Тебе дают JSON со списком набирающих "
-                "популярность репозиториев на GitHub (id, title, full_text).\n"
-                "ТВОЯ ЗАДАЧА: отбери до 5 самых перспективных и релевантных "
-                "тематике AI/ML проектов. Верни только список их id. Текст "
-                "описания менять, переводить или пересказывать не нужно — "
-                "он используется как есть, в оригинале."
-            )
+    return Agent(
+        model=get_model(),
+        output_type=SelectionResult,
+        system_prompt=(
+            "Ты — Senior Developer. Тебе дают JSON со списком набирающих "
+            "популярность репозиториев на GitHub (id, title, full_text).\n"
+            "ТВОЯ ЗАДАЧА: отбери до 5 самых перспективных и релевантных "
+            "тематике AI/ML проектов. Верни только список их id. Текст "
+            "описания менять, переводить или пересказывать не нужно — "
+            "он используется как есть, в оригинале."
         )
-    return _github_agent
+    )
 
 
 # === 2. ГЛАВНАЯ ЛОГИКА ===
-async def fetch_github_trending(days_back: int = 7, limit: int = 15) -> list[dict]:
+async def fetch_github_trending(days_back: int = 7, limit: int = 15, language: str = "Python") -> list[dict]:
     """
     Собирает популярные репозитории, созданные за последние N дней.
+    language — GitHub search qualifier "language:" (см. https://docs.github.com/search-github/searching-on-github/searching-for-repositories);
+    по умолчанию "Python", чтобы в выборку не попадали репозитории на других языках.
+    Передайте language=None, чтобы вернуть прежнее поведение без фильтра по языку.
     """
     articles_payload = []
     
     # Считаем дату отсечки (например, 7 дней назад)
     date_cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime('%Y-%m-%d')
     query = f"created:>{date_cutoff}"
+    if language:
+        query += f" language:{language}"
     
     url = "https://api.github.com/search/repositories"
     params = {
@@ -123,7 +126,7 @@ async def fetch_github_trending(days_back: int = 7, limit: int = 15) -> list[dic
         if not proxy_url.startswith(("http://", "https://")):
             proxy_url = f"http://{proxy_url}"
 
-    logger.info(f"Запрос к GitHub API: поиск трендов с {date_cutoff}...")
+    logger.info(f"Запрос к GitHub API: поиск трендов с {date_cutoff} (query='{query}')...")
     
     try:
         async with httpx.AsyncClient(timeout=15.0, trust_env=False, proxy=proxy_url) as client:
@@ -201,7 +204,7 @@ async def fetch_github_trending(days_back: int = 7, limit: int = 15) -> list[dic
             logger.info("Агент завершил работу за %.2fs", time.perf_counter() - start_time)
 
     except httpx.RequestError as e:
-        logger.error(f"Ошибка сети при запросе к GitHub: {e}")
+        logger.error(f"Ошибка сети при запросе к GitHub: {type(e).__name__}: {e}")
     except Exception as e:
         logger.error(f"Сбой в пайплайне GitHub: {e}")
         
@@ -209,9 +212,9 @@ async def fetch_github_trending(days_back: int = 7, limit: int = 15) -> list[dic
 
 
 # === СИНХРОННАЯ ОБЁРТКА ПОД КОНТРАКТ stream_all_new_articles() ===
-def stream_github_articles(days_back: int = 7, limit: int = 15):
+def stream_github_articles(days_back: int = 7, limit: int = 15, language: str = "Python"):
     """Синхронный генератор-адаптер над fetch_github_trending()."""
-    articles = asyncio.run(fetch_github_trending(days_back, limit))
+    articles = asyncio.run(fetch_github_trending(days_back, limit, language))
     for article in articles:
         yield article
 
@@ -223,5 +226,5 @@ if __name__ == "__main__":
     
     print("=== ТЕСТОВЫЙ ЗАПУСК GITHUB FETCHER ===")
     res = asyncio.run(fetch_github_trending())
-    print(f"\n✅ Получено репозиториев: {len(res)}\n")
+    print(f"\nПолучено репозиториев: {len(res)}\n")
     print(json.dumps(res, indent=2, ensure_ascii=False))

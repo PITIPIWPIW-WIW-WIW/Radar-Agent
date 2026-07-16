@@ -24,7 +24,11 @@ except ImportError:
 # Настройки логирования
 load_dotenv()
 logger = logging.getLogger("hf_fetcher")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+# ВАЖНО: НЕ вызываем basicConfig() на уровне модуля — main.py импортирует
+# этот файл раньше, чем успевает отработать main.setup_logging(), и Python
+# молча игнорирует все последующие basicConfig()-вызовы. Раньше это намертво
+# запирало LOG_LEVEL из .env на INFO для всего приложения. Настройка для
+# прямого запуска — в блоке if __name__ == "__main__" в конце файла.
 
 # === ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМА ===
 # Установи False, когда команда закончит работу над LLM-агентом
@@ -73,25 +77,24 @@ class MockAgent:
         )
         return MockRunResult(mock_data)
 
-_hf_agent = None
-
 def _get_hf_agent():
-    """Создает реального агента или возвращает заглушку в зависимости от режима."""
-    global _hf_agent
-    
+    """Создаёт реального агента или возвращает заглушку в зависимости от режима.
+
+    Реальный агент НЕ кэшируется (см. фикс в agent_manager.get_model()) —
+    этот фетчер гоняется через свой отдельный asyncio.run(), и закэшированный
+    синглтон остался бы привязан к закрытому event loop при следующем вызове,
+    вызывая 'Event loop is closed'."""
     if IS_TEST_MODE:
         return MockAgent()
-        
-    if _hf_agent is None:
-        _hf_agent = Agent(
-            model=get_model(),
-            output_type=SelectionResult,
-            system_prompt=(
-                "Ты — технический аналитик ИИ. Тебе на вход дают JSON со списком новых AI-моделей...\n"
-                "ТВОЯ ЗАДАЧА: Отбери до 5 моделей, сделай перевод, верни JSON."
-            )
+
+    return Agent(
+        model=get_model(),
+        output_type=SelectionResult,
+        system_prompt=(
+            "Ты — технический аналитик ИИ. Тебе на вход дают JSON со списком новых AI-моделей...\n"
+            "ТВОЯ ЗАДАЧА: Отбери до 5 моделей, сделай перевод, верни JSON."
         )
-    return _hf_agent
+    )
 
 
 # === 2. НАСТРОЙКИ СЕРВЕРА MCP ===
@@ -99,6 +102,10 @@ HF_SERVER_PARAMS = StdioServerParameters(
     command="uvx",
     args=["huggingface-mcp-server"],
     env={
+        # ВАЖНО: huggingface-mcp-server читает именно HF_TOKEN, а не
+        # HUGGINGFACE_API_KEY — раньше сервер токен вообще не получал и
+        # работал анонимно (рейт-лимиты, нестабильная выдача).
+        "HF_TOKEN": os.getenv("HUGGINGFACE_API_KEY", ""),
         "HUGGINGFACE_API_KEY": os.getenv("HUGGINGFACE_API_KEY", ""),
         "PATH": os.getenv("PATH", "")
     }
@@ -140,7 +147,7 @@ async def fetch_readme_directly(model_id: str) -> str:
             else:
                 logger.warning(f"HuggingFace вернул статус {response.status_code} для {clean_id}")
     except httpx.RequestError as e:
-        logger.error(f"Ошибка сети при скачивании {clean_id}: {e}")
+        logger.error(f"Ошибка сети при скачивании {clean_id}: {type(e).__name__}: {e}")
         
     return ""
 
@@ -152,10 +159,23 @@ async def _call_tool(session: ClientSession, tool_name: str, arguments: dict) ->
 
 
 # === 4. ГЛАВНАЯ ЛОГИКА ===
+def _suppress_benign_proactor_errors(loop, context):
+    """
+    На Windows при закрытии stdio-пайпа MCP-подпроцесса asyncio иногда кидает
+    безвредный шум "Cancelling an overlapped future failed" (WinError 6) —
+    уже ПОСЛЕ того, как подпроцесс отработал и данные забраны. К логике/
+    данным отношения не имеет — гасим точечно, остальные ошибки пробрасываем.
+    """
+    if "Cancelling an overlapped future failed" in context.get("message", ""):
+        return
+    loop.default_exception_handler(context)
+
+
 async def fetch_hf_materials_via_mcp(query: str = "text-generation") -> list[dict]:
     """Главная функция для импорта. Ищет модели, скачивает тексты, переводит через агента."""
     articles_payload = []
-    
+    asyncio.get_running_loop().set_exception_handler(_suppress_benign_proactor_errors)
+
     if not os.getenv("HUGGINGFACE_API_KEY"):
         logger.warning("HUGGINGFACE_API_KEY не задан — возможны ограничения со стороны API.")
 
@@ -245,6 +265,7 @@ def stream_hf_articles(query: str = "text-generation"):
 
 # === БЛОК ДЛЯ ТЕСТИРОВАНИЯ ИЗОЛИРОВАННО (ПРИ ПРЯМОМ ЗАПУСКЕ ФАЙЛА) ===
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     

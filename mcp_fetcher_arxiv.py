@@ -22,7 +22,22 @@ ARXIV_CANDIDATES_LIMIT = 15   # сколько статей запрашивае
 FINAL_ARTICLES_COUNT = 5
 FRESHNESS_WINDOW_DAYS = 3     # берём статьи, опубликованные не позже N дней назад
 
-DEFAULT_CATEGORIES = ["cs.AI", "cs.LG", "cs.CL"]
+DEFAULT_CATEGORIES = [
+    "cs.AI",   # Artificial Intelligence
+    "cs.LG",   # Machine Learning
+    "cs.CL",   # Computation and Language (NLP)
+    "cs.CV",   # Computer Vision
+    "cs.NE",   # Neural and Evolutionary Computing
+    "cs.MA",   # Multiagent Systems
+    "cs.RO",   # Robotics
+    "stat.ML", # Machine Learning (Statistics)
+    "eess.AS", # Audio and Speech Processing
+    "eess.IV", # Image and Video Processing
+    "eess.SP", # Signal Processing
+    "cs.IR"    # Information Retrieval
+    "cs.HCI", # Human-Computer Interaction
+    "cs.DC", # Distributed, Parallel, and Cluster Computing
+]
 
 
 # --- Схема данных: LLM отвечает ТОЛЬКО за тематический отбор id ---
@@ -33,34 +48,30 @@ class SelectionResult(BaseModel):
     )
 
 
-# selector_agent создаётся лениво (не на уровне модуля) — иначе простой импорт
-# этого файла (например, для тестов парсинга) требовал бы рабочий MISTRAL_API_KEY.
-_selector_agent = None
-
-
+# Агент НЕ кэшируется (см. фикс в agent_manager.get_model()) — этот фетчер
+# гоняется через свой отдельный asyncio.run(), закэшированный синглтон
+# остался бы привязан к закрытому event loop и падал бы с 'Event loop is
+# closed' при следующем вызове в рамках того же процесса.
 def _get_selector_agent() -> Agent:
-    global _selector_agent
-    if _selector_agent is None:
-        _selector_agent = Agent(
-            model=get_model(),
-            output_type=SelectionResult,
-            system_prompt=(
-                "Ты — технический аналитик, который отбирает статьи для базы знаний по ИИ.\n\n"
-                f"Тебе дадут JSON-список кандидатов (статьи с arXiv), у каждого есть поля "
-                "id, title, abstract. Список уже отфильтрован по свежести и категориям — "
-                f"свежесть можно не учитывать. Отбери до {FINAL_ARTICLES_COUNT} статей, "
-                "наиболее релевантных практическим темам AI/ML/DL/NLP (новые модели, методы, "
-                "бенчмарки, инструменты). Чисто теоретические математические работы без "
-                "прикладной ценности — игнорируй.\n\n"
-                "Твоя ЕДИНСТВЕННАЯ задача — вернуть список id выбранных статей. Текст "
-                "(abstract) менять, переводить или пересказывать не нужно — он останется "
-                "в оригинальном виде без твоего участия.\n\n"
-                f"Если подходящих статей меньше {FINAL_ARTICLES_COUNT} — верни столько, "
-                "сколько нашлось. Если ни одна не подходит — верни пустой список. Не "
-                "выдумывай факты, если данных недостаточно."
-            )
+    return Agent(
+        model=get_model(),
+        output_type=SelectionResult,
+        system_prompt=(
+            "Ты — технический аналитик, который отбирает статьи для базы знаний по ИИ.\n\n"
+            f"Тебе дадут JSON-список кандидатов (статьи с arXiv), у каждого есть поля "
+            "id, title, abstract. Список уже отфильтрован по свежести и категориям — "
+            f"свежесть можно не учитывать. Отбери до {FINAL_ARTICLES_COUNT} статей, "
+            "наиболее релевантных практическим темам AI/ML/DL/NLP (новые модели, методы, "
+            "бенчмарки, инструменты). Чисто теоретические математические работы без "
+            "прикладной ценности — игнорируй.\n\n"
+            "Твоя ЕДИНСТВЕННАЯ задача — вернуть список id выбранных статей. Текст "
+            "(abstract) менять, переводить или пересказывать не нужно — он останется "
+            "в оригинальном виде без твоего участия.\n\n"
+            f"Если подходящих статей меньше {FINAL_ARTICLES_COUNT} — верни столько, "
+            "сколько нашлось. Если ни одна не подходит — верни пустой список. Не "
+            "выдумывай факты, если данных недостаточно."
         )
-    return _selector_agent
+    )
 
 
 ARXIV_SERVER_PARAMS = StdioServerParameters(
@@ -200,6 +211,18 @@ async def _collect_candidates(
 
 # --- Публичный интерфейс модуля (асинхронный) ---
 
+def _suppress_benign_proactor_errors(loop, context):
+    """
+    На Windows при закрытии stdio-пайпа MCP-подпроцесса asyncio иногда кидает
+    безвредный шум "Cancelling an overlapped future failed" (WinError 6) —
+    уже ПОСЛЕ того, как подпроцесс отработал и данные забраны. К логике/
+    данным отношения не имеет — гасим точечно, остальные ошибки пробрасываем.
+    """
+    if "Cancelling an overlapped future failed" in context.get("message", ""):
+        return
+    loop.default_exception_handler(context)
+
+
 async def fetch_articles_via_mcp(
     query: str = "large language models",
     categories: list[str] | None = None,
@@ -217,6 +240,7 @@ async def fetch_articles_via_mcp(
     date_from = (datetime.now(timezone.utc) - timedelta(days=freshness_days)).strftime("%Y-%m-%d")
 
     articles_payload = []
+    asyncio.get_running_loop().set_exception_handler(_suppress_benign_proactor_errors)
 
     logger.info("Запуск подпроцесса arXiv MCP сервера...")
     try:

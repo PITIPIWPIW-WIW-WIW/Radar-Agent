@@ -6,7 +6,6 @@ import re
 import time
 import logging
 from datetime import datetime, timezone
-from langdetect import detect_langs, LangDetectException, DetectorFactory
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_ai import Agent
 from mcp import ClientSession, StdioServerParameters
@@ -18,18 +17,11 @@ from agent_manager import get_model
 load_dotenv()
 logger = logging.getLogger("mcp_fetcher")
 
-# Фиксируем seed — без этого detect_langs недетерминирован между вызовами
-# на одном и том же тексте (задокументированное поведение библиотеки)
-DetectorFactory.seed = 0
-
 KAGGLE_BASE_URL = "https://www.kaggle.com"
 
 CANDIDATES_PER_TYPE = 8
 FINAL_MATERIALS_COUNT = 5
 FRESHNESS_TOP_N = 10  # сколько самых свежих кандидатов (по реальной дате) отдаём на тематический отбор LLM
-
-LANG_DETECTION_CONFIDENCE_THRESHOLD = 0.85
-MIN_PROSE_LENGTH_FOR_DETECTION = 40
 
 
 # --- Схема данных: LLM отвечает ТОЛЬКО за тематический отбор id ---
@@ -40,37 +32,34 @@ class SelectionResult(BaseModel):
     )
 
 
-# selector_agent создаётся лениво (не на уровне модуля) — иначе простой
-# импорт kaggle_fetcher.py (например, для тестов _parse_markdown_list или
-# _extract_ref_parts, которым Mistral вообще не нужен) требовал бы рабочий
-# MISTRAL_API_KEY. Ключ нужен только когда реально доходим до тематического
-# отбора через LLM.
-_selector_agent = None
-
-
+# selector_agent НЕ кэшируется как синглтон (см. тот же фикс в
+# agent_manager.get_model()) — этот фетчер гоняется через свой отдельный
+# asyncio.run(), и каждый такой вызов создаёт и закрывает свой event loop.
+# Если закэшировать Agent (внутри которого httpx.AsyncClient) один раз,
+# он останется привязан к ПЕРВОМУ loop'у — при следующем вызове (например,
+# из main.py в рамках того же процесса) сработает "Event loop is closed",
+# потому что тот loop уже закрыт. Пересоздаём агента при каждом вызове —
+# небольшой оверхед, зато без риска использовать мёртвый event loop.
 def _get_selector_agent() -> Agent:
-    global _selector_agent
-    if _selector_agent is None:
-        _selector_agent = Agent(
-            model=get_model(),
-            output_type=SelectionResult,
-            system_prompt=(
-                "Ты — технический аналитик, который отбирает материалы для базы знаний по ИИ.\n\n"
-                f"Тебе дадут JSON-список кандидатов (датасеты и модели с Kaggle), у каждого "
-                "есть поля id, type, title, full_text. Список уже предварительно отсортирован "
-                "по свежести — все кандидаты достаточно новые, свежесть можно не учитывать. "
-                f"Отбери до {FINAL_MATERIALS_COUNT} материалов, наиболее релевантных строго "
-                "тематикам AI, ML, DL и DS (искусственный интеллект, машинное обучение, "
-                "глубокое обучение, наука о данных). Материалы вне этих тематик игнорируй.\n\n"
-                "Твоя ЕДИНСТВЕННАЯ задача — вернуть список id выбранных материалов. "
-                "Текст менять, переводить или пересказывать не нужно — он останется "
-                "в оригинальном виде без твоего участия.\n\n"
-                f"Если подходящих материалов меньше {FINAL_MATERIALS_COUNT} — верни столько, "
-                "сколько нашлось. Если ни один материал не подходит — верни пустой список. "
-                "Не выдумывай факты, если данных недостаточно."
-            )
+    return Agent(
+        model=get_model(),
+        output_type=SelectionResult,
+        system_prompt=(
+            "Ты — технический аналитик, который отбирает материалы для базы знаний по ИИ.\n\n"
+            f"Тебе дадут JSON-список кандидатов (датасеты и модели с Kaggle), у каждого "
+            "есть поля id, type, title, full_text. Список уже предварительно отсортирован "
+            "по свежести — все кандидаты достаточно новые, свежесть можно не учитывать. "
+            f"Отбери до {FINAL_MATERIALS_COUNT} материалов, наиболее релевантных строго "
+            "тематикам AI, ML, DL и DS (искусственный интеллект, машинное обучение, "
+            "глубокое обучение, наука о данных). Материалы вне этих тематик игнорируй.\n\n"
+            "Твоя ЕДИНСТВЕННАЯ задача — вернуть список id выбранных материалов. "
+            "Текст менять, переводить или пересказывать не нужно — он останется "
+            "в оригинальном виде без твоего участия.\n\n"
+            f"Если подходящих материалов меньше {FINAL_MATERIALS_COUNT} — верни столько, "
+            "сколько нашлось. Если ни один материал не подходит — верни пустой список. "
+            "Не выдумывай факты, если данных недостаточно."
         )
-    return _selector_agent
+    )
 
 
 KAGGLE_SERVER_PARAMS = StdioServerParameters(
@@ -169,54 +158,6 @@ def _parse_last_updated(detail: dict) -> datetime:
         return datetime.min.replace(tzinfo=timezone.utc)
 
 
-# --- Фильтрация по языку (действует ДО отправки в LLM) ---
-
-_CODE_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
-_INLINE_CODE_RE = re.compile(r"`[^`]*`")
-_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
-_URL_RE = re.compile(r"https?://\S+")
-
-def _strip_non_prose(text: str) -> str:
-    """Убирает код, ссылки и markdown-разметку, чтобы детектор языка работал на чистой прозе."""
-    text = _CODE_BLOCK_RE.sub(" ", text)
-    text = _INLINE_CODE_RE.sub(" ", text)
-    text = _MD_LINK_RE.sub(r"\1", text)
-    text = _URL_RE.sub(" ", text)
-    return text.strip()
-
-
-def _is_confidently_non_english(text: str) -> bool:
-    """
-    True только если детектор УВЕРЕННО определил язык как не-английский.
-    В спорных случаях (мало текста, низкая уверенность) — считаем английским,
-    чтобы не терять хорошие материалы из-за ошибки эвристики на markdown/коде.
-    """
-    prose = _strip_non_prose(text)
-    if len(prose) < MIN_PROSE_LENGTH_FOR_DETECTION:
-        return False
-
-    try:
-        candidates = detect_langs(prose[:3000])
-    except LangDetectException:
-        return False
-
-    top = candidates[0]
-    if top.lang == "en":
-        return False
-
-    return top.prob >= LANG_DETECTION_CONFIDENCE_THRESHOLD
-
-
-def _filter_english_only(candidates: list[dict]) -> list[dict]:
-    kept = []
-    for c in candidates:
-        if _is_confidently_non_english(c["full_text"]):
-            logger.info(f"Отсеян неанглоязычный материал: '{c['title']}' ({c['id']})")
-            continue
-        kept.append(c)
-    return kept
-
-
 # --- Сбор кандидатов (list + get) для датасетов и моделей ---
 
 async def _collect_dataset_candidates(session: ClientSession, query: str, limit: int) -> list[dict]:
@@ -295,6 +236,23 @@ async def _collect_model_candidates(session: ClientSession, query: str, limit: i
 
 # --- Публичный интерфейс модуля (асинхронный) ---
 
+def _suppress_benign_proactor_errors(loop, context):
+    """
+    На Windows при закрытии stdio-пайпа MCP-подпроцесса asyncio иногда кидает
+    безвредный шум "Cancelling an overlapped future failed" (WinError 6,
+    "Неверный дескриптор") — это уже ПОСЛЕ того, как подпроцесс отработал и
+    данные забраны, просто ProactorEventLoop не может штатно отменить уже
+    мёртвую операцию чтения. К логике/данным отношения не имеет — гасим
+    точечно, чтобы не засорять errors.log, все остальные ошибки пробрасываем
+    как обычно. (Тот же фикс уже стоит в FetcherHF.py, FetcherHFDatasets.py и
+    mcp_fetcher_arxiv.py — здесь его не было, а Kaggle в пайплайне запускается
+    последним, поэтому именно его "хвост" видно в конце errors.log.)
+    """
+    if "Cancelling an overlapped future failed" in context.get("message", ""):
+        return
+    loop.default_exception_handler(context)
+
+
 async def fetch_materials_via_mcp(query: str = "machine learning") -> list[dict]:
     """
     Возвращает материалы с ОРИГИНАЛЬНЫМ (не переведённым) текстом. Свежесть определяется
@@ -302,6 +260,8 @@ async def fetch_materials_via_mcp(query: str = "machine learning") -> list[dict]
     отбор среди уже самых свежих кандидатов. Перевод на русский и финальное сжатие —
     отдельный шаг позже, только для материалов, прошедших дедуп по векторам.
     """
+    asyncio.get_running_loop().set_exception_handler(_suppress_benign_proactor_errors)
+
     if not os.getenv("KAGGLE_USERNAME") or not os.getenv("KAGGLE_KEY"):
         logger.warning("KAGGLE_USERNAME/KAGGLE_KEY не заданы — запросы к Kaggle, скорее всего, завершатся ошибкой")
 
@@ -316,8 +276,6 @@ async def fetch_materials_via_mcp(query: str = "machine learning") -> list[dict]
                 dataset_candidates = await _collect_dataset_candidates(session, query, CANDIDATES_PER_TYPE)
                 model_candidates = await _collect_model_candidates(session, query, CANDIDATES_PER_TYPE)
                 all_candidates = dataset_candidates + model_candidates
-
-                all_candidates = _filter_english_only(all_candidates)
 
                 if not all_candidates:
                     logger.info("Нет кандидатов для анализа. Завершение работы модуля.")

@@ -23,10 +23,15 @@ except ImportError:
 
 load_dotenv()
 logger = logging.getLogger("hf_datasets_fetcher")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+# ВАЖНО: basicConfig() здесь НЕ вызываем на уровне модуля. Если вызвать его
+# при импорте (а main.py импортирует этот файл раньше, чем успевает
+# отработать main.setup_logging()), Python молча игнорирует все последующие
+# basicConfig()-вызовы — уровень LOG_LEVEL из .env вообще перестаёт работать
+# для всего приложения. Настройку логирования при прямом запуске см. в
+# блоке if __name__ == "__main__" в конце файла.
 
 # === ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМА ===
-IS_TEST_MODE = False  
+IS_TEST_MODE = False
 
 
 # === 1. СХЕМЫ ДЛЯ ИИ-ПЕРЕВОДЧИКА ===
@@ -70,23 +75,21 @@ class MockAgent:
         )
         return MockRunResult(mock_data)
 
-_hf_dataset_agent = None
-
 def _get_hf_dataset_agent():
-    global _hf_dataset_agent
+    """Реальный агент НЕ кэшируется (см. фикс в agent_manager.get_model()) —
+    иначе синглтон остаётся привязан к закрытому event loop своего
+    asyncio.run() и следующий вызов падает с 'Event loop is closed'."""
     if IS_TEST_MODE:
         return MockAgent()
-        
-    if _hf_dataset_agent is None:
-        _hf_dataset_agent = Agent(
-            model=get_model(),
-            output_type=SelectionResult,
-            system_prompt=(
-                "Ты — Data Scientist. Тебе дают JSON со списком новых датасетов с платформы Hugging Face.\n"
-                "ТВОЯ ЗАДАЧА: Отбери до 5 самых качественных датасетов, переведи их суть на русский (объем, формат данных, для чего нужны) и верни JSON."
-            )
+
+    return Agent(
+        model=get_model(),
+        output_type=SelectionResult,
+        system_prompt=(
+            "Ты — Data Scientist. Тебе дают JSON со списком новых датасетов с платформы Hugging Face.\n"
+            "ТВОЯ ЗАДАЧА: Отбери до 5 самых качественных датасетов, переведи их суть на русский (объем, формат данных, для чего нужны) и верни JSON."
         )
-    return _hf_dataset_agent
+    )
 
 
 # === 2. НАСТРОЙКИ СЕРВЕРА MCP ===
@@ -94,6 +97,12 @@ HF_SERVER_PARAMS = StdioServerParameters(
     command="uvx",
     args=["huggingface-mcp-server"],
     env={
+        # ВАЖНО: сам huggingface-mcp-server читает именно HF_TOKEN (см. его
+        # README/PyPI), а не HUGGINGFACE_API_KEY. Раньше сюда передавался
+        # только HUGGINGFACE_API_KEY — сервер токен не видел и стучался в HF
+        # Hub API анонимно, из-за чего ловил рейт-лимиты/урезанные ответы.
+        # Оставляем оба имени для совместимости, если версия сервера сменится.
+        "HF_TOKEN": os.getenv("HUGGINGFACE_API_KEY", ""),
         "HUGGINGFACE_API_KEY": os.getenv("HUGGINGFACE_API_KEY", ""),
         "PATH": os.getenv("PATH", "")
     }
@@ -131,7 +140,7 @@ async def fetch_dataset_readme_directly(dataset_id: str) -> str:
             else:
                 logger.warning(f"HuggingFace вернул статус {response.status_code} для датасета {clean_id}")
     except httpx.RequestError as e:
-        logger.error(f"Ошибка сети при скачивании датасета {clean_id}: {e}")
+        logger.error(f"Ошибка сети при скачивании датасета {clean_id}: {type(e).__name__}: {e}")
         
     return ""
 
@@ -142,10 +151,65 @@ async def _call_tool(session: ClientSession, tool_name: str, arguments: dict) ->
     return "\n".join(part.text for part in response.content if hasattr(part, "text") and part.text)
 
 
+# Максимальный возраст датасета (по дате последнего обновления на HF),
+# после которого он считается неактуальным и отсеивается при наличии
+# более свежих кандидатов.
+MAX_DATASET_AGE_DAYS = 180
+
+# Разные версии/сборки huggingface-mcp-server отдают дату разными полями —
+# проверяем все известные варианты по очереди.
+_DATE_FIELDS = ("lastModified", "last_modified", "lastModifiedAt", "createdAt", "created_at")
+
+def _parse_hf_date(raw: dict) -> datetime | None:
+    """Достаёт дату последнего обновления датасета из сырого ответа MCP-сервера."""
+    for key in _DATE_FIELDS:
+        value = raw.get(key)
+        if not value:
+            continue
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def _cap_per_owner(candidates: list[dict], max_per_owner: int) -> list[dict]:
+    """Оставляет не больше max_per_owner датасетов от одного владельца (owner из
+    'owner/name'), предпочитая самые свежие. Без этого один автор с десятками
+    почти одинаковых форков (см. joey234/mmlu-machine_learning-* в errors.log)
+    занимает все места в FRESHNESS_TOP_N, и до LLM-отбора никогда не доходит
+    ничего кроме его старых вариаций."""
+    by_owner: dict[str, list[dict]] = {}
+    for c in candidates:
+        owner = c["title"].split("/", 1)[0] if "/" in c["title"] else c["title"]
+        by_owner.setdefault(owner, []).append(c)
+
+    kept = []
+    for owner, items in by_owner.items():
+        items.sort(key=lambda c: c["last_modified"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        kept.extend(items[:max_per_owner])
+    return kept
+
+
 # === 4. ГЛАВНАЯ ЛОГИКА ===
+def _suppress_benign_proactor_errors(loop, context):
+    """
+    На Windows при закрытии stdio-пайпа MCP-подпроцесса asyncio иногда кидает
+    безвредный шум "Cancelling an overlapped future failed" (WinError 6) —
+    это уже ПОСЛЕ того, как подпроцесс отработал и данные забраны, просто
+    ProactorEventLoop не может штатно отменить уже мёртвую операцию чтения.
+    К логике/данным отношения не имеет — гасим точечно, чтобы не засорять
+    errors.log, все остальные ошибки пробрасываем как обычно.
+    """
+    if "Cancelling an overlapped future failed" in context.get("message", ""):
+        return
+    loop.default_exception_handler(context)
+
+
 async def fetch_hf_datasets_via_mcp(query: str = "machine learning") -> list[dict]:
     articles_payload = []
-    
+    asyncio.get_running_loop().set_exception_handler(_suppress_benign_proactor_errors)
+
     if not os.getenv("HUGGINGFACE_API_KEY"):
         logger.warning("HUGGINGFACE_API_KEY не задан.")
 
@@ -156,15 +220,48 @@ async def fetch_hf_datasets_via_mcp(query: str = "machine learning") -> list[dic
                 await session.initialize()
                 
                 # Шаг 1: Поиск датасетов
-                search_args = {"query": query, "limit": 15}
-                raw_list = await _call_tool(session, "search-datasets", search_args)
-                datasets_data = json.loads(raw_list)
-                
+                # ВАЖНО: одного текстового запроса недостаточно. HF отдаёт результаты
+                # по релевантности названию, а не по свежести (sort/direction ниже —
+                # best-effort, часть сборок сервера его игнорирует), и для широкой фразы
+                # вроде "machine learning" топ выдачи почти целиком состоит из старых
+                # десятков форков одного и того же бенчмарка (mmlu-machine_learning-*
+                # и т.п. — см. errors.log). Раньше это гарантированно съедало все 10
+                # мест FRESHNESS-выборки одинаковыми старыми вариантами. Поэтому:
+                # 1) опрашиваем несколько разных формулировок темы, а не одну;
+                # 2) ниже, после сборки all_candidates, ограничиваем число кандидатов
+                #    от одного автора (owner) — см. _cap_per_owner.
+                search_queries = list(dict.fromkeys([query, "LLM", "large language model"]))
+                seen_ids = set()
+                datasets_data = []
+                for q in search_queries:
+                    search_args = {"query": q, "limit": 30, "sort": "lastModified", "direction": -1}
+                    raw_list = await _call_tool(session, "search-datasets", search_args)
+                    try:
+                        page = json.loads(raw_list)
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(f"search-datasets вернул нераспарсиваемый ответ для запроса '{q}': {raw_list[:300]}")
+                        continue
+
+                    if page:
+                        logger.debug(
+                            "Пример сырого ответа search-datasets для '%s' (проверка имён полей даты): %s",
+                            q, json.dumps(page[0], ensure_ascii=False)[:500],
+                        )
+
+                    for dataset in page:
+                        dataset_id = dataset.get("id")
+                        if not dataset_id or dataset_id in seen_ids:
+                            continue
+                        seen_ids.add(dataset_id)
+                        datasets_data.append(dataset)
+
                 all_candidates = []
                 for dataset in datasets_data:
                     dataset_id = dataset.get("id")
                     if not dataset_id: continue
-                    
+
+                    last_modified = _parse_hf_date(dataset)
+
                     # Шаг 2: Скачивание
                     raw_readme = await fetch_dataset_readme_directly(dataset_id)
                     if not raw_readme: continue
@@ -177,14 +274,36 @@ async def fetch_hf_datasets_via_mcp(query: str = "machine learning") -> list[dic
                         "id": f"hf_dataset:{dataset_id}",
                         "title": dataset_id,
                         "full_text": clean_text,
-                        "url": f"https://huggingface.co/datasets/{dataset_id}"
+                        "url": f"https://huggingface.co/datasets/{dataset_id}",
+                        "last_modified": last_modified,
                     })
+
+                all_candidates = _cap_per_owner(all_candidates, max_per_owner=2)
                 
                 if not all_candidates:
                     logger.info("Кандидаты не найдены.")
                     return articles_payload
-                
-                freshest_candidates = all_candidates[:10]
+
+                # Сортируем по дате обновления (свежие сначала). Кандидаты без даты
+                # (не удалось распарсить поле) уходят в конец, а не в начало.
+                all_candidates.sort(
+                    key=lambda c: c["last_modified"] or datetime.min.replace(tzinfo=timezone.utc),
+                    reverse=True,
+                )
+
+                now = datetime.now(timezone.utc)
+                fresh_candidates = [
+                    c for c in all_candidates
+                    if c["last_modified"] and (now - c["last_modified"]).days <= MAX_DATASET_AGE_DAYS
+                ]
+
+                if not fresh_candidates:
+                    logger.warning(
+                        "Ни один датасет не обновлялся за последние %d дн. — беру самые свежие из найденных без строгого фильтра.",
+                        MAX_DATASET_AGE_DAYS,
+                    )
+
+                freshest_candidates = (fresh_candidates or all_candidates)[:10]
                 candidates_by_id = {c["id"]: c for c in freshest_candidates}
                 
                 llm_input = [
@@ -227,6 +346,7 @@ def stream_hf_datasets(query: str = "machine learning"):
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     

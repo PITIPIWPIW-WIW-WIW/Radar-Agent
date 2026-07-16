@@ -4,9 +4,11 @@ numpy
 python-dotenv
 tenacity
 httpx
-fastembed
+fastembed==0.5.1  # ВАЖНО: не апгрейдить без пересчёта DUPLICATE_THRESHOLD в config.py —
+                  # версии новее меняют pooling (CLS -> mean) для этой модели, из-за чего
+                  # меняется распределение косинусных сходств и калиброванный порог 0.59
+                  # перестаёт значить то же самое (см. calibrate_threshold.py)
 mcp
-langdetect
 pytest
 playwright
 fastapi

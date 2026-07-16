@@ -5,6 +5,7 @@ import random
 from playwright.sync_api import sync_playwright
 
 from database import init_db, save_leaderboard_data
+from leaderboard_analyzer import run_leaderboard_analysis
 
 # ==========================================
 # ЧАСТЬ 1: СКРАПЕР (Получение HTML-кода)
@@ -215,6 +216,10 @@ def save_to_db(data):
     save_leaderboard_data(data)
     print(f"\n[УСПЕХ] Сохранено в БД: {sum(len(v) for v in data['categories'].values())} строк "
           f"по {len(data['categories'])} категориям (снимок от {data['fetched_at']})")
+
+    print("[АНАЛИЗ] Строим инкрементальный анализ (новый снимок + предыдущий + предыдущий анализ)...")
+    run_leaderboard_analysis()
+    print("[АНАЛИЗ] Готово.")
 
 def main():
     # Оставили только 11 стабильных категорий (убрали agent)

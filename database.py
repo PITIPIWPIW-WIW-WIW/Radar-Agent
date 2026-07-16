@@ -41,6 +41,15 @@ def init_db():
             rating INTEGER NOT NULL,
             fetched_at TEXT NOT NULL
         );''')
+        # Таблица для накопительного (инкрементального) анализа лидерборда.
+        # В отличие от leaderboard (там ротация, храним только 2 снимка),
+        # тут история НЕ чистится — это база знаний о том, как менялся рынок.
+        cursor.execute('''CREATE TABLE IF NOT EXISTS leaderboard_analysis (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fetched_at TEXT NOT NULL,
+            analysis_text TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );''')
         conn.commit()
 
 
@@ -128,6 +137,38 @@ def save_leaderboard_data(data: dict) -> None:
         ''', records_to_insert)
 
 
+def save_analysis(fetched_at: str, analysis_text: str) -> None:
+    """
+    Сохраняет новый текстовый анализ лидерборда. В отличие от save_leaderboard_data,
+    НИЧЕГО не удаляет — каждый анализ добавляется к истории, чтобы следующий анализ
+    мог опираться на всё, что было написано раньше.
+    """
+    with get_connection() as conn:
+        conn.execute('''
+            INSERT INTO leaderboard_analysis (fetched_at, analysis_text)
+            VALUES (?, ?)
+        ''', (fetched_at, analysis_text))
+
+
+def get_latest_analysis() -> dict | None:
+    """Самый свежий сохранённый анализ (или None, если анализов ещё не было)."""
+    with get_connection() as conn:
+        cursor = conn.execute(
+            'SELECT * FROM leaderboard_analysis ORDER BY id DESC LIMIT 1'
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def get_analysis_history(limit: int = 10) -> list[dict]:
+    """История анализов от новых к старым — для отображения динамики на фронтенде."""
+    with get_connection() as conn:
+        cursor = conn.execute(
+            'SELECT * FROM leaderboard_analysis ORDER BY id DESC LIMIT ?', (limit,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+
 def get_all_leaderboard_snapshots() -> list[dict]:
     with get_connection() as conn:
         # Вычитывает все данные из leaderboard
@@ -188,9 +229,7 @@ if __name__ == '__main__':
     save_leaderboard_data(snapshot_3)  # Тут сработает удаление первого слепка
     print("Данные сохранены! Ротация лидерборда отработала.\n")
 
-    print("==========================================")
     print("    ВИЗУАЛИЗАЦИЯ ТАБЛИЦ ИЗ БАЗЫ ДАННЫХ    ")
-    print("==========================================\n")
 
     # 1. Показываем статьи
     print(">>> ТАБЛИЦА: articles")
@@ -215,4 +254,3 @@ if __name__ == '__main__':
             print(f"  Категория '{cat}':")
             for m in models:
                 print(f"    - Модель: {m['name']}, Рейтинг: {m['rating']}")
-    print("==========================================")

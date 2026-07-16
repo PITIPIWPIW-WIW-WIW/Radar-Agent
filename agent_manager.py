@@ -92,6 +92,89 @@ def _call_agent(prompt: str):
     return _get_article_agent().run_sync(prompt)
 
 
+class LeaderboardAnalysis(BaseModel):
+    """Структурированный результат инкрементального анализа лидерборда Arena.ai."""
+    summary: str = Field(description="Общий обзор текущего состояния лидерборда, 3-5 предложений")
+    trends: list[str] = Field(
+        description="3-6 ключевых изменений по сравнению с предыдущим анализом: "
+                    "новые лидеры, кто вырос/упал в рейтинге, какие тенденции прошлого "
+                    "анализа подтвердились или сломались"
+    )
+
+
+LEADERBOARD_SYSTEM_PROMPT = """
+Ты — аналитик рынка LLM и генеративных ИИ-моделей. Тебе дают:
+1. Текущий снимок лидерборда Arena.ai (топ-5 моделей по категориям с рейтингом Elo).
+2. Предыдущий снимок лидерборда (может отсутствовать, если это самый первый анализ).
+3. Предыдущий текстовый анализ, который ты сам (или предыдущая версия тебя) написал
+   в прошлый раз (может отсутствовать, если это первый анализ).
+
+Твоя задача — построить анализ С УЧЁТОМ ИСТОРИИ, а не пересказать текущие цифры с нуля:
+объясни, что изменилось со времени предыдущего анализа (новые лидеры, кто вырос или упал
+в рейтинге, какие тенденции из прошлого анализа продолжились, а какие сломались).
+Если предыдущего снимка и анализа нет — прямо укажи, что это первый анализ, и опиши
+только текущую картину, без сравнений.
+
+Отвечай строго в структурированном виде, без лишнего текста и без markdown-заголовков.
+"""
+
+
+def _get_leaderboard_agent() -> Agent:
+    return Agent(
+        model=get_model(),
+        output_type=LeaderboardAnalysis,
+        system_prompt=LEADERBOARD_SYSTEM_PROMPT,
+    )
+
+
+@retry(
+    retry=retry_if_exception(_is_rate_limit_error),
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=30),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
+def _call_leaderboard_agent(prompt: str):
+    return _get_leaderboard_agent().run_sync(prompt)
+
+
+def _format_snapshot(snapshot: dict | None) -> str:
+    """Превращает снимок лидерборда в компактный текст для промпта."""
+    if not snapshot:
+        return "(нет данных — снимок отсутствует)"
+    lines = [f"Снимок от {snapshot['fetched_at']}:"]
+    for category, models in snapshot["categories"].items():
+        models_str = ", ".join(f"{m['name']} ({m['rating']})" for m in models)
+        lines.append(f"  - {category}: {models_str}")
+    return "\n".join(lines)
+
+
+def analyze_leaderboard(
+    current_snapshot: dict,
+    previous_snapshot: dict | None,
+    previous_analysis: str | None,
+) -> LeaderboardAnalysis:
+    """
+    Строит НОВЫЙ анализ лидерборда на основе текущего снимка + предыдущего снимка +
+    предыдущего текстового анализа. Это инкрементальный анализ: агент видит, что он
+    писал в прошлый раз, и продолжает мысль, а не начинает с чистого листа.
+    """
+    prompt = (
+        "=== ТЕКУЩИЙ СНИМОК ===\n"
+        f"{_format_snapshot(current_snapshot)}\n\n"
+        "=== ПРЕДЫДУЩИЙ СНИМОК ===\n"
+        f"{_format_snapshot(previous_snapshot)}\n\n"
+        "=== ПРЕДЫДУЩИЙ АНАЛИЗ (текст, написанный тобой ранее) ===\n"
+        f"{previous_analysis or '(отсутствует — это первый анализ)'}\n"
+    )
+    try:
+        result = _call_leaderboard_agent(prompt)
+        return result.output
+    except Exception as e:
+        logger.error(f"Ошибка анализа лидерборда: {e}")
+        raise AnalysisError(f"Не удалось проанализировать лидерборд: {e}") from e
+
+
 def analyze_article(title: str, text: str) -> ArticleAnalysis:
     """
     Синхронная обертка над агентом.

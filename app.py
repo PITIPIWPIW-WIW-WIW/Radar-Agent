@@ -1,9 +1,14 @@
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 # Импортируем функции из твоей неизмененной базы данных
-from database import init_db, get_all_leaderboard_snapshots, save_leaderboard_data, get_all_articles
+from database import (
+    init_db, get_all_leaderboard_snapshots, save_leaderboard_data, get_all_articles,
+    get_analysis_history,
+)
 # Импортируем неизмененный скрапер
 import arena_scraper
+# Инкрементальный анализ лидерборда (новый снимок + предыдущий снимок + предыдущий анализ)
+from leaderboard_analyzer import run_leaderboard_analysis
 
 app = FastAPI(title="Arena AI API")
 
@@ -47,7 +52,12 @@ def run_original_scraper_and_save():
         # 2. Передаем собранный словарь напрямую в оригинальную функцию сохранения базы данных
         print("[БЭКЕНД] Сбор завершен. Записываем живые данные в базу...")
         save_leaderboard_data(real_data)
-        print("[БЭКЕНД] Успешно сохранено!")
+        print("[БЭКЕНД] Успешно сохранено! Строим инкрементальный анализ...")
+
+        # Анализ строится СРАЗУ после сохранения нового снимка: агент видит
+        # новый снимок, предыдущий снимок и свой же предыдущий анализ.
+        run_leaderboard_analysis()
+        print("[БЭКЕНД] Анализ лидерборда обновлён!")
     except Exception as e:
         print(f"[БЭКЕНД ОШИБКА] Ошибка при работе связки скрапера и БД: {e}")
 
@@ -74,6 +84,20 @@ def trigger_scraping(background_tasks: BackgroundTasks):
         "status": "success",
         "message": "Оригинальный скрапер запущен! Сбор данных займет около 1-2 минут."
     }
+
+
+# Эндпоинт для истории анализа лидерборда (от новых к старым)
+@app.get("/leaderboard/analysis")
+def read_leaderboard_analysis():
+    try:
+        history = get_analysis_history(limit=10)
+        return {
+            "status": "success",
+            "total_analyses": len(history),
+            "data": history,
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e), "data": []}
 
 
 # Твой эндпоинт для статей (оставляем без изменений)

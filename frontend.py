@@ -380,7 +380,8 @@ elif page == "Трендовые модели HF":
             for j, model in enumerate(row_models):
                 with cols[j]:
                     with st.container(border=True):
-                        st.markdown(f"**{model['model_name']}**")
+                        model_url = f"https://huggingface.co/{model['model_name']}"
+                        st.markdown(f"**[{model['model_name']}]({model_url})**")
 
                         tags = model.get("tags", [])
                         if tags:

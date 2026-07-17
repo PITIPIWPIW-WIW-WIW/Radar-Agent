@@ -110,14 +110,6 @@ def _safe_json_loads(raw: str):
     except (ValueError, SyntaxError, TypeError):
         return None
 
-
-# --- Разбор ответа search_papers ---
-# ВАЖНО: это осознанно устойчивая к формату точка входа — у неофициального
-# сервера структура ответа не задокументирована жёстко (может быть как
-# список, так и словарь-обёртка {"papers": [...]}). Если формат сменится
-# и ни один из вариантов не совпадёт, вернётся [] с warning — начинать
-# отладку "почему база не пополняется" следует отсюда.
-
 def _extract_papers(raw_search_result) -> list[dict]:
     if isinstance(raw_search_result, list):
         return raw_search_result
@@ -143,12 +135,7 @@ _EXTERNAL_CONTENT_PREFIX_RE = re.compile(r"^\[EXTERNAL CONTENT\]\s*", re.IGNOREC
 
 
 def _paper_abstract(paper: dict) -> str:
-    """
-    Забираем описание СТРОГО как есть (после срезки служебной метки сервера
-    выше), без изменения языка, перевода или пересказа. Разные версии
-    сервера могут называть поле по-разному — перебираем варианты названия
-    ключа, но само содержимое abstract не трогаем.
-    """
+
     for key in ("abstract", "summary", "description"):
         value = paper.get(key)
         if value and isinstance(value, str) and value.strip():
@@ -163,12 +150,6 @@ def _paper_url(paper: dict, paper_id: str) -> str:
         return url
     return f"https://arxiv.org/abs/{paper_id}"
 
-
-# --- Сбор кандидатов ---
-# В отличие от kaggle-фетчера, здесь НЕТ второго вызова тула на каждый
-# кандидат (там был list + get): search_papers сразу отдаёт abstract,
-# а полный текст статьи (download_paper/read_paper) нам не нужен — для
-# эмбеддинга и дедупа достаточно описания, а не всей статьи целиком.
 
 async def _collect_candidates(
     session: ClientSession, query: str, categories: list[str], date_from: str
@@ -212,12 +193,6 @@ async def _collect_candidates(
 # --- Публичный интерфейс модуля (асинхронный) ---
 
 def _suppress_benign_proactor_errors(loop, context):
-    """
-    На Windows при закрытии stdio-пайпа MCP-подпроцесса asyncio иногда кидает
-    безвредный шум "Cancelling an overlapped future failed" (WinError 6) —
-    уже ПОСЛЕ того, как подпроцесс отработал и данные забраны. К логике/
-    данным отношения не имеет — гасим точечно, остальные ошибки пробрасываем.
-    """
     if "Cancelling an overlapped future failed" in context.get("message", ""):
         return
     loop.default_exception_handler(context)
@@ -228,14 +203,6 @@ async def fetch_articles_via_mcp(
     categories: list[str] | None = None,
     freshness_days: int = FRESHNESS_WINDOW_DAYS,
 ) -> list[dict]:
-    """
-    Возвращает статьи с ОРИГИНАЛЬНЫМ (не переведённым, не пересказанным)
-    abstract. LLM отвечает только за тематический отбор среди уже
-    отфильтрованных по свежести и категориям кандидатов — сам текст
-    abstract она получает лишь для того, чтобы решить, подходит ли статья
-    по теме; в возвращаемый payload идёт оригинальный текст из кандидата,
-    а не то, что вернула LLM.
-    """
     categories = categories or DEFAULT_CATEGORIES
     date_from = (datetime.now(timezone.utc) - timedelta(days=freshness_days)).strftime("%Y-%m-%d")
 
@@ -306,19 +273,6 @@ async def fetch_articles_via_mcp(
 # --- Синхронная обёртка под контракт stream_all_new_articles() ---
 
 def stream_arxiv_articles(query: str = "large language models"):
-    """
-    Синхронный генератор-адаптер над fetch_articles_via_mcp() — тот же
-    паттерн, что и stream_kaggle_articles() в mcp_fetcher_kaggle.py:
-    внутри всё равно не стримится (сначала собираются все кандидаты, потом
-    одним вызовом уходят в LLM), поэтому оборачивание в generator ничего
-    не теряет по сравнению с текущим поведением.
-
-    ВАЖНО: asyncio.run() упадёт с RuntimeError, если вызвать эту функцию
-    из кода, где уже крутится свой event loop (например, из другого async
-    обработчика в пайплайне). Если stream_all_new_articles() когда-нибудь
-    станет асинхронным или будет вызываться через asyncio.gather — нужно
-    звать fetch_articles_via_mcp() напрямую с await, а не через эту обёртку.
-    """
     articles = asyncio.run(fetch_articles_via_mcp(query))
     for article in articles:
         yield article
@@ -326,7 +280,7 @@ def stream_arxiv_articles(query: str = "large language models"):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    print("=== ЗАПУСК ТЕСТА: MISTRAL + ARXIV MCP ===")
+    print("ЗАПУСК ТЕСТА: MISTRAL + ARXIV MCP")
     try:
         res = asyncio.run(fetch_articles_via_mcp("large language models"))
         print(f"\nМодуль отработал успешно. Получено объектов для БД: {len(res)}")

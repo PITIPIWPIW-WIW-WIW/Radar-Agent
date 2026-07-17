@@ -34,21 +34,24 @@ def init_db():
             tags TEXT NOT NULL,
             added_at TEXT DEFAULT CURRENT_TIMESTAMP
         );""")
-        # Таблица для лидерборда уже добавлена сюда для порядка
         cursor.execute('''CREATE TABLE IF NOT EXISTS leaderboard (
             category TEXT NOT NULL,
             model_name TEXT NOT NULL,
             rating INTEGER NOT NULL,
             fetched_at TEXT NOT NULL
         );''')
-        # Таблица для накопительного (инкрементального) анализа лидерборда.
-        # В отличие от leaderboard (там ротация, храним только 2 снимка),
-        # тут история НЕ чистится — это база знаний о том, как менялся рынок.
         cursor.execute('''CREATE TABLE IF NOT EXISTS leaderboard_analysis (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             fetched_at TEXT NOT NULL,
             analysis_text TEXT NOT NULL,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS hf_trending (
+            model_name TEXT NOT NULL,
+            downloads INTEGER NOT NULL,
+            likes INTEGER NOT NULL,
+            tags TEXT NOT NULL,
+            fetched_at TEXT DEFAULT CURRENT_TIMESTAMP
         );''')
         conn.commit()
 
@@ -169,6 +172,36 @@ def get_analysis_history(limit: int = 10) -> list[dict]:
         return [dict(row) for row in cursor.fetchall()]
 
 
+
+def save_trending_models(models: list[dict]) -> None:
+    """
+    Полностью заменяет предыдущую витрину трендовых моделей новой.
+    models: [{"name": str, "downloads": int, "likes": int, "tags": list[str]}, ...]
+    """
+    fetched_at = datetime.utcnow().isoformat()
+    with get_connection() as conn:
+        conn.execute('DELETE FROM hf_trending')
+        conn.executemany('''
+            INSERT INTO hf_trending (model_name, downloads, likes, tags, fetched_at)
+            VALUES (?, ?, ?, ?, ?)
+        ''', [
+            (m["name"], m["downloads"], m["likes"], json.dumps(m["tags"]), fetched_at)
+            for m in models
+        ])
+
+
+def get_trending_models() -> list[dict]:
+    """Текущая витрина трендовых моделей (порядок сохранён как при сохранении)."""
+    with get_connection() as conn:
+        cursor = conn.execute('SELECT rowid, * FROM hf_trending ORDER BY rowid ASC')
+        result = []
+        for row in cursor:
+            item = dict(row)
+            item['tags'] = json.loads(item['tags'])
+            result.append(item)
+        return result
+
+
 def get_all_leaderboard_snapshots() -> list[dict]:
     with get_connection() as conn:
         # Вычитывает все данные из leaderboard
@@ -254,3 +287,4 @@ if __name__ == '__main__':
             print(f"  Категория '{cat}':")
             for m in models:
                 print(f"    - Модель: {m['name']}, Рейтинг: {m['rating']}")
+    print("==========================================")

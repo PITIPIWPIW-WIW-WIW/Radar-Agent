@@ -23,14 +23,7 @@ except ImportError:
 
 load_dotenv()
 logger = logging.getLogger("hf_datasets_fetcher")
-# ВАЖНО: basicConfig() здесь НЕ вызываем на уровне модуля. Если вызвать его
-# при импорте (а main.py импортирует этот файл раньше, чем успевает
-# отработать main.setup_logging()), Python молча игнорирует все последующие
-# basicConfig()-вызовы — уровень LOG_LEVEL из .env вообще перестаёт работать
-# для всего приложения. Настройку логирования при прямом запуске см. в
-# блоке if __name__ == "__main__" в конце файла.
 
-# === ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМА ===
 IS_TEST_MODE = False
 
 
@@ -174,11 +167,6 @@ def _parse_hf_date(raw: dict) -> datetime | None:
 
 
 def _cap_per_owner(candidates: list[dict], max_per_owner: int) -> list[dict]:
-    """Оставляет не больше max_per_owner датасетов от одного владельца (owner из
-    'owner/name'), предпочитая самые свежие. Без этого один автор с десятками
-    почти одинаковых форков (см. joey234/mmlu-machine_learning-* в errors.log)
-    занимает все места в FRESHNESS_TOP_N, и до LLM-отбора никогда не доходит
-    ничего кроме его старых вариаций."""
     by_owner: dict[str, list[dict]] = {}
     for c in candidates:
         owner = c["title"].split("/", 1)[0] if "/" in c["title"] else c["title"]
@@ -193,14 +181,6 @@ def _cap_per_owner(candidates: list[dict], max_per_owner: int) -> list[dict]:
 
 # === 4. ГЛАВНАЯ ЛОГИКА ===
 def _suppress_benign_proactor_errors(loop, context):
-    """
-    На Windows при закрытии stdio-пайпа MCP-подпроцесса asyncio иногда кидает
-    безвредный шум "Cancelling an overlapped future failed" (WinError 6) —
-    это уже ПОСЛЕ того, как подпроцесс отработал и данные забраны, просто
-    ProactorEventLoop не может штатно отменить уже мёртвую операцию чтения.
-    К логике/данным отношения не имеет — гасим точечно, чтобы не засорять
-    errors.log, все остальные ошибки пробрасываем как обычно.
-    """
     if "Cancelling an overlapped future failed" in context.get("message", ""):
         return
     loop.default_exception_handler(context)
@@ -218,18 +198,6 @@ async def fetch_hf_datasets_via_mcp(query: str = "machine learning") -> list[dic
         async with stdio_client(HF_SERVER_PARAMS) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
-                
-                # Шаг 1: Поиск датасетов
-                # ВАЖНО: одного текстового запроса недостаточно. HF отдаёт результаты
-                # по релевантности названию, а не по свежести (sort/direction ниже —
-                # best-effort, часть сборок сервера его игнорирует), и для широкой фразы
-                # вроде "machine learning" топ выдачи почти целиком состоит из старых
-                # десятков форков одного и того же бенчмарка (mmlu-machine_learning-*
-                # и т.п. — см. errors.log). Раньше это гарантированно съедало все 10
-                # мест FRESHNESS-выборки одинаковыми старыми вариантами. Поэтому:
-                # 1) опрашиваем несколько разных формулировок темы, а не одну;
-                # 2) ниже, после сборки all_candidates, ограничиваем число кандидатов
-                #    от одного автора (owner) — см. _cap_per_owner.
                 search_queries = list(dict.fromkeys([query, "LLM", "large language model"]))
                 seen_ids = set()
                 datasets_data = []
@@ -339,7 +307,6 @@ async def fetch_hf_datasets_via_mcp(query: str = "machine learning") -> list[dic
 
 # === СИНХРОННАЯ ОБЁРТКА ПОД КОНТРАКТ stream_all_new_articles() ===
 def stream_hf_datasets(query: str = "machine learning"):
-    """Синхронный генератор-адаптер над fetch_hf_datasets_via_mcp()."""
     articles = asyncio.run(fetch_hf_datasets_via_mcp(query))
     for article in articles:
         yield article
@@ -350,7 +317,7 @@ if __name__ == "__main__":
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     
-    print("=== ТЕСТОВЫЙ ЗАПУСК МОДУЛЯ ДАТАСЕТОВ ===")
+    print("ТЕСТОВЫЙ ЗАПУСК МОДУЛЯ ДАТАСЕТОВ")
     res = asyncio.run(fetch_hf_datasets_via_mcp("finance"))
     print(f"\n Получено датасетов: {len(res)}\n")
     print(json.dumps(res, indent=2, ensure_ascii=False))

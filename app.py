@@ -1,14 +1,12 @@
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-# Импортируем функции из твоей неизмененной базы данных
 from database import (
     init_db, get_all_leaderboard_snapshots, save_leaderboard_data, get_all_articles,
-    get_analysis_history,
+    get_analysis_history, save_trending_models, get_trending_models,
 )
-# Импортируем неизмененный скрапер
 import arena_scraper
-# Инкрементальный анализ лидерборда (новый снимок + предыдущий снимок + предыдущий анализ)
 from leaderboard_analyzer import run_leaderboard_analysis
+from mcp_fetcher_hf_trending import fetch_trending_models
 
 app = FastAPI(title="Arena AI API")
 
@@ -96,6 +94,40 @@ def read_leaderboard_analysis():
             "total_analyses": len(history),
             "data": history,
         }
+    except Exception as e:
+        return {"status": "error", "message": str(e), "data": []}
+
+
+# Внутренняя функция бэкенда: тянет трендовые модели через hf-trending-mcp и сохраняет
+def run_trending_fetch_and_save():
+    print("[БЭКЕНД] Запуск сбора трендовых моделей HF (hf-trending-mcp)...")
+    try:
+        models = fetch_trending_models(limit=15)
+        if not models:
+            print("[БЭКЕНД] Трендовые модели не получены (пусто или ошибка MCP-сервера).")
+            return
+        save_trending_models(models)
+        print(f"[БЭКЕНД] Сохранено трендовых моделей: {len(models)}")
+    except Exception as e:
+        print(f"[БЭКЕНД ОШИБКА] Не удалось получить трендовые модели: {e}")
+
+
+# Эндпоинт для фонового запуска сбора трендовых моделей
+@app.post("/trending/refresh")
+def trigger_trending_fetch(background_tasks: BackgroundTasks):
+    background_tasks.add_task(run_trending_fetch_and_save)
+    return {
+        "status": "success",
+        "message": "Сбор трендовых моделей HF запущен в фоне.",
+    }
+
+
+# Эндпоинт для вывода текущей витрины трендовых моделей
+@app.get("/trending/models")
+def read_trending_models():
+    try:
+        models = get_trending_models()
+        return {"status": "success", "total_models": len(models), "data": models}
     except Exception as e:
         return {"status": "error", "message": str(e), "data": []}
 

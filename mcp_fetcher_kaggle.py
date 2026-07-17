@@ -237,29 +237,12 @@ async def _collect_model_candidates(session: ClientSession, query: str, limit: i
 # --- Публичный интерфейс модуля (асинхронный) ---
 
 def _suppress_benign_proactor_errors(loop, context):
-    """
-    На Windows при закрытии stdio-пайпа MCP-подпроцесса asyncio иногда кидает
-    безвредный шум "Cancelling an overlapped future failed" (WinError 6,
-    "Неверный дескриптор") — это уже ПОСЛЕ того, как подпроцесс отработал и
-    данные забраны, просто ProactorEventLoop не может штатно отменить уже
-    мёртвую операцию чтения. К логике/данным отношения не имеет — гасим
-    точечно, чтобы не засорять errors.log, все остальные ошибки пробрасываем
-    как обычно. (Тот же фикс уже стоит в FetcherHF.py, FetcherHFDatasets.py и
-    mcp_fetcher_arxiv.py — здесь его не было, а Kaggle в пайплайне запускается
-    последним, поэтому именно его "хвост" видно в конце errors.log.)
-    """
     if "Cancelling an overlapped future failed" in context.get("message", ""):
         return
     loop.default_exception_handler(context)
 
 
 async def fetch_materials_via_mcp(query: str = "machine learning") -> list[dict]:
-    """
-    Возвращает материалы с ОРИГИНАЛЬНЫМ (не переведённым) текстом. Свежесть определяется
-    точной датой из Kaggle API (программно, до LLM); LLM отвечает только за тематический
-    отбор среди уже самых свежих кандидатов. Перевод на русский и финальное сжатие —
-    отдельный шаг позже, только для материалов, прошедших дедуп по векторам.
-    """
     asyncio.get_running_loop().set_exception_handler(_suppress_benign_proactor_errors)
 
     if not os.getenv("KAGGLE_USERNAME") or not os.getenv("KAGGLE_KEY"):
@@ -334,22 +317,6 @@ async def fetch_materials_via_mcp(query: str = "machine learning") -> list[dict]
 # --- Синхронная обёртка под контракт stream_all_new_articles() ---
 
 def stream_kaggle_articles(query: str = "machine learning"):
-    """
-    Синхронный генератор-адаптер над fetch_materials_via_mcp().
-
-    fetch_materials_via_mcp — async по необходимости (MCP-клиент сам
-    поднимает подпроцесс и общается с ним через asyncio), но внутри себя
-    и так не стримит данные: сначала собирает всех кандидатов, потом одним
-    вызовом отправляет их в LLM и возвращает готовый список (максимум
-    FINAL_MATERIALS_COUNT штук). Поэтому оборачивание в generator здесь
-    ничего не теряет по сравнению с текущим поведением — просто даёт
-    синхронному main.py дёргать этот источник так же, как остальные:
-
-        def stream_all_new_articles():
-            yield from stream_github_articles()
-            yield from stream_arxiv_articles()
-            yield from stream_kaggle_articles()
-    """
     articles = asyncio.run(fetch_materials_via_mcp(query))
     for article in articles:
         yield article
@@ -357,7 +324,7 @@ def stream_kaggle_articles(query: str = "machine learning"):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    print("=== ЗАПУСК НАДЕЖНОГО ТЕСТА: MISTRAL + KAGGLE MCP ===")
+    print("ЗАПУСК НАДЕЖНОГО ТЕСТА: MISTRAL + KAGGLE MCP")
     try:
         res = asyncio.run(fetch_materials_via_mcp("LLM"))
         print(f"\nМодуль отработал успешно. Получено объектов для БД: {len(res)}")

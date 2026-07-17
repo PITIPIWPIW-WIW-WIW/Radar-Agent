@@ -64,9 +64,6 @@ class MockAgent:
         return MockRunResult(mock_data)
 
 def _get_github_agent():
-    """Реальный агент НЕ кэшируется (см. фикс в agent_manager.get_model()) —
-    иначе синглтон остаётся привязан к закрытому event loop своего
-    asyncio.run() и следующий вызов падает с 'Event loop is closed'."""
     if IS_TEST_MODE:
         return MockAgent()
 
@@ -83,15 +80,8 @@ def _get_github_agent():
         )
     )
 
-
-# === 2. ГЛАВНАЯ ЛОГИКА ===
 async def fetch_github_trending(days_back: int = 7, limit: int = 15, language: str = "Python") -> list[dict]:
-    """
-    Собирает популярные репозитории, созданные за последние N дней.
-    language — GitHub search qualifier "language:" (см. https://docs.github.com/search-github/searching-on-github/searching-for-repositories);
-    по умолчанию "Python", чтобы в выборку не попадали репозитории на других языках.
-    Передайте language=None, чтобы вернуть прежнее поведение без фильтра по языку.
-    """
+
     articles_payload = []
     
     # Считаем дату отсечки (например, 7 дней назад)
@@ -211,7 +201,7 @@ async def fetch_github_trending(days_back: int = 7, limit: int = 15, language: s
     return articles_payload
 
 
-# === СИНХРОННАЯ ОБЁРТКА ПОД КОНТРАКТ stream_all_new_articles() ===
+
 def stream_github_articles(days_back: int = 7, limit: int = 15, language: str = "Python"):
     """Синхронный генератор-адаптер над fetch_github_trending()."""
     articles = asyncio.run(fetch_github_trending(days_back, limit, language))
@@ -219,12 +209,12 @@ def stream_github_articles(days_back: int = 7, limit: int = 15, language: str = 
         yield article
 
 
-# === ТЕСТОВЫЙ ЗАПУСК ===
+
 if __name__ == "__main__":
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     
-    print("=== ТЕСТОВЫЙ ЗАПУСК GITHUB FETCHER ===")
+    print("ТЕСТОВЫЙ ЗАПУСК GITHUB FETCHER")
     res = asyncio.run(fetch_github_trending())
     print(f"\nПолучено репозиториев: {len(res)}\n")
     print(json.dumps(res, indent=2, ensure_ascii=False))

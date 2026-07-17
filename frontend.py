@@ -7,66 +7,100 @@ st.set_page_config(page_title="AI Dashboard", layout="wide", initial_sidebar_sta
 
 custom_css = """
 <style>
-    /* Скрываем верхнюю полосу */
+
     header {visibility: hidden !important;}
     .block-container {padding-top: 1.5rem !important; max-width: 96% !important;}
 
-    /* Светлый нейтральный фон вместо чёрного */
+    [data-testid="collapsedControl"] {
+        visibility: visible !important;
+        background-color: #0a0f1c !important; /* Темный фон */
+        border-right: 2px solid #10b981 !important; /* Зеленая рамка справа */
+        border-top: 2px solid #10b981 !important;
+        border-bottom: 2px solid #10b981 !important;
+        border-radius: 0 10px 10px 0 !important; /* Закругляем только правые углы */
+        top: 15px !important; /* Смещаем чуть ниже верхнего края */
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.6) !important;
+        transition: all 0.3s ease !important;
+        z-index: 999999 !important;
+    }
+    
+    [data-testid="collapsedControl"]:hover {
+        box-shadow: 0 0 15px rgba(16, 185, 129, 0.8) !important;
+        transform: scale(1.05) !important;
+    }
+    [data-testid="collapsedControl"] svg {
+        color: #10b981 !important;
+        fill: #10b981 !important;
+    }
+
+    [data-testid="stSidebar"] button {
+        color: #10b981 !important;
+    }
+    [data-testid="stSidebar"] button:hover {
+        background-color: rgba(16, 185, 129, 0.1) !important;
+    }
+    [data-testid="stSidebar"] button svg {
+        fill: #10b981 !important;
+    }
+
     [data-testid="stAppViewContainer"] {
-        background-color: #ffffff !important;
+        background-color: #050810 !important; 
     }
     [data-testid="stSidebar"] {
-        background-color: #fafafa !important;
-        border-right: 1px solid #e5e5e5 !important;
+        background-color: #080c17 !important;
+        border-right: 1px solid #10b981 !important;
     }
-
     p, span, h1, h2, h3, h4, h5, h6, label, li {
-        color: #1a1a1a !important;
+        color: #f8fafc !important;
     }
-
-    /* Карточки: тонкий бордер вместо неоновой рамки, без box-shadow */
     [data-testid="stVerticalBlockBorderWrapper"] {
         border-radius: 12px !important;
-        border: 1px solid #e5e5e5 !important;
-        background-color: #ffffff !important;
-        box-shadow: none !important;
-        transition: border-color 0.15s ease !important;
+        border: 2px solid #10b981 !important; 
+        background-color: #0a0f1c !important; 
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.8) !important;
+        transition: all 0.3s ease !important;
     }
     [data-testid="stVerticalBlockBorderWrapper"]:hover {
-        border-color: #d4d4d4 !important;
+        transform: translateY(-5px) !important;
+        border-color: #34d399 !important; 
+        box-shadow: 0 0 25px rgba(16, 185, 129, 0.6) !important; /
     }
 
-    /* Кнопки — один спокойный акцент (янтарный), без свечения */
     div.stButton > button {
         border-radius: 8px !important;
-        font-weight: 500 !important;
-        border: 1px solid #e5e5e5 !important;
-        background-color: #ffffff !important;
-        color: #1a1a1a !important;
-        transition: background-color 0.15s ease !important;
+        font-weight: 700 !important;
+        border: 1px solid #10b981 !important;
+        background-color: transparent !important;
+        color: #10b981 !important;
+        transition: all 0.2s ease !important;
     }
     div.stButton > button:hover {
-        background-color: #f5f5f5 !important;
+        background-color: #10b981 !important;
+        color: #050810 !important; /* Текст становится темным */
+        box-shadow: 0 0 15px rgba(16, 185, 129, 0.5) !important;
+        transform: scale(1.02);
     }
 
-    /* Главная кнопка — единственный элемент с акцентной заливкой на экране */
+    /* Главная кнопка (сразу залита зеленым) */
     div.stButton > button[kind="primary"] {
-        background-color: #d97706 !important;
-        color: #ffffff !important;
+        background-color: #10b981 !important; 
+        color: #050810 !important;
         border: none !important;
     }
     div.stButton > button[kind="primary"]:hover {
-        background-color: #b45309 !important;
+        background-color: #34d399 !important;
+        box-shadow: 0 0 25px rgba(16, 185, 129, 0.8) !important;
     }
 
     [data-testid="stMetricValue"] {
-        font-weight: 500 !important;
-        font-size: 1.75rem !important;
-        color: #1a1a1a !important;
+        font-weight: 900 !important;
+        font-size: 2.5rem !important;
+        color: #10b981 !important; /
+        text-shadow: 0 0 10px rgba(16, 185, 129, 0.3) !important;
     }
 
     hr {
-        border-color: #e5e5e5 !important;
+        border-color: rgba(16, 185, 129, 0.3) !important;
     }
 </style>
 """
@@ -168,7 +202,7 @@ if page == "Лидерборд моделей":
         analysis_history = analysis_response["data"]
         latest = analysis_history[0]
 
-        st.subheader("🧠 Аналитика недели")
+        st.subheader("Аналитика недели")
         st.caption(f"Снимок: {latest['fetched_at']}")
         st.write(latest["analysis_text"])
 
@@ -235,7 +269,13 @@ if page == "Лидерборд моделей":
         selected_category = st.sidebar.selectbox("Категория:", ["Все категории"] + unique_categories)
 
         unique_dates = sorted(list(set(r["fetched_at"] for r in leaderboard_records)), reverse=True)
-        selected_date = st.sidebar.selectbox("Дата снимка:", ["Все даты"] + unique_dates)
+        # Раньше по умолчанию было "Все даты" — это склеивало все хранимые снимки
+        # (обычно 2) в один список, и каждая модель показывалась дважды.
+        # Теперь по умолчанию (index=0) показываем только последний снимок,
+        # а "Все даты" — просто опция в конце списка, для тех, кто явно хочет
+        # сравнить снимки между собой.
+        date_options = unique_dates + ["Все даты"]
+        selected_date = st.sidebar.selectbox("Дата снимка:", date_options, index=0)
 
         search_query = st.sidebar.text_input("Поиск модели:")
 

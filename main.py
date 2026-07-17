@@ -14,21 +14,6 @@ from github_fetcher import stream_github_articles
 
 
 class _BenignProactorNoiseFilter(logging.Filter):
-    """
-    На Windows при завершении процесса asyncio иногда пытается отменить уже
-    мёртвую overlapped-операцию чтения из stdio-пайпа MCP-подпроцесса (HF,
-    HF Datasets, arXiv, Kaggle) и падает с WinError 6 "Неверный дескриптор".
-    Это происходит уже ПОСЛЕ того, как конкретный fetcher отработал и данные
-    забраны — просто уборка мусора транспортов идёт после того, как loop этого
-    fetcher'а уже закрыт. К логике/данным отношения не имеет.
-
-    ВАЖНО: это НЕ то же самое, что set_exception_handler() в фетчерах — тот
-    механизм не перехватывает данный конкретный случай, потому что запись идёт
-    через собственный логгер asyncio ("asyncio").error(...) уже после закрытия
-    loop'а, а не через call_exception_handler() того loop'а, где стоит наш
-    обработчик. Подавляем именно на уровне логирования — единственное место,
-    где это гарантированно работает независимо от таймингов.
-    """
     def filter(self, record: logging.LogRecord) -> bool:
         return "Cancelling an overlapped future failed" not in record.getMessage()
 
@@ -76,13 +61,6 @@ def _fake_articles():
 
 
 def stream_all_new_articles():
-    """
-    Объединяет все источники в один поток статей вида {title, text, source_url}.
-
-    Каждый реальный источник обёрнут в try/except: если конкретный источник
-    упал (нет uvx/MCP-сервера, сеть легла, нет ключа) — остальные всё равно
-    отрабатывают, пайплайн не падает целиком из-за одного источника.
-    """
     yield from _fake_articles()
 
     try:

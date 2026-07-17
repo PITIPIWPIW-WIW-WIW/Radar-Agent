@@ -1,8 +1,3 @@
-"""
-Agent Manager — модуль ИИ-агента для анализа статей.
-Использует PydanticAI для гарантированного структурированного вывода (summary + tags).
-"""
-
 import logging
 
 import httpx
@@ -38,12 +33,6 @@ SYSTEM_PROMPT = """
 """
 
 def get_model() -> MistralModel:
-    """
-    Создаёт свежий MistralModel (со своим http_client) при каждом вызове.
-    Ключ проверяется здесь же, а не на уровне модуля — импорт этого файла
-    не должен требовать валидный MISTRAL_API_KEY, он нужен только в момент
-    реального вызова.
-    """
     if not config.MISTRAL_API_KEY:
         raise RuntimeError(
             "MISTRAL_API_KEY не найден. Создай файл .env на основе .env.example "
@@ -69,11 +58,6 @@ class AnalysisError(Exception):
 
 
 def _is_rate_limit_error(exception: BaseException) -> bool:
-    """
-    Проверяет, похожа ли ошибка на 429 (rate limit) от Mistral API.
-    Free tier Mistral: 2 запроса в секунду — на free tier легко словить 429
-    при последовательном парсинге нескольких статей подряд.
-    """
     status_code = getattr(exception, "status_code", None)
     if status_code == 429:
         return True

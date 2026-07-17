@@ -207,13 +207,21 @@ async def fetch_hf_materials_via_mcp(query: str = "text-generation") -> list[dic
                         "id": f"hf_model:{model_id}",
                         "title": model_id,
                         "full_text": clean_text,
-                        "url": f"https://huggingface.co/{model_id}"
+                        "url": f"https://huggingface.co/{model_id}",
+                        # lastModified — ISO8601-строка от HF API. Строковая сортировка
+                        # по ней работает корректно (лексикографический порядок ISO8601
+                        # совпадает с хронологическим).
+                        "last_modified": model.get("lastModified", ""),
                     })
                 
                 if not all_candidates:
                     logger.info("Кандидаты не найдены или тексты пустые.")
                     return articles_payload
                 
+                # Сортируем по свежести (недавно обновлённые — вперёд), а уже потом
+                # берём первые 10. Раньше порядок был "как отдал search-models" —
+                # то есть по релевантности запросу, а не по дате обновления.
+                all_candidates.sort(key=lambda c: c["last_modified"], reverse=True)
                 freshest_candidates = all_candidates[:10]
                 candidates_by_id = {c["id"]: c for c in freshest_candidates}
                 

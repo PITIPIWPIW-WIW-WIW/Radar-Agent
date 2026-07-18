@@ -15,3 +15,6 @@ VECTOR_DIM = int(os.getenv("VECTOR_DIM", "384"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 LOG_FILE = os.getenv("LOG_FILE", "app.log")
 ERROR_LOG_FILE = os.getenv("ERROR_LOG_FILE", "errors.log")
+
+# --- База данных ---
+DB_NAME = os.getenv("DB_NAME", "app_database.db")

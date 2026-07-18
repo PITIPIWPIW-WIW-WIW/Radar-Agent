@@ -41,6 +41,7 @@ def _parse_trending_text(raw_text: str) -> list[dict]:
                 "downloads": int(model_match.group("downloads").replace(",", "")),
                 "likes": int(model_match.group("likes").replace(",", "")),
                 "tags": [],
+                "url": f"https://huggingface.co/{model_match.group('name')}",
             }
             continue
 
@@ -68,16 +69,22 @@ async def _call_get_trending_models(limit: int) -> str:
             response = await session.call_tool("get_trending_models", arguments={"limit": limit})
             if not response.content:
                 return ""
-            return "\n".join(
+            raw = "\n".join(
                 part.text for part in response.content if hasattr(part, "text") and part.text
             )
+            if response.isError:
+                # Раньше это никак не проверялось: текст ошибки/трейсбека молча
+                # прогонялся через регулярку парсера моделей, не матчился и
+                # превращался в models=[] без единого следа реальной причины.
+                raise RuntimeError(f"MCP-тул get_trending_models вернул ошибку: {raw}")
+            return raw
 
 
 def fetch_trending_models(limit: int = 15) -> list[dict]:
     try:
         raw_text = asyncio.run(_call_get_trending_models(limit))
     except Exception as e:
-        logger.error(f"Не удалось получить трендовые модели HF: {e}")
+        logger.error(f"Не удалось получить трендовые модели HF: {e!r}")
         return []
 
     if not raw_text:

@@ -31,7 +31,7 @@ def run_leaderboard_analysis() -> None:
             previous_analysis=previous_analysis_text,
         )
     except agent_manager.AnalysisError as e:
-        logger.error(f"Не удалось построить анализ лидерборда: {e}")
+        logger.error(f"Не удалось построить анализ лидерборда: {e!r}")
         return
 
     analysis_text = analysis.summary + "\n\n" + "\n".join(f"- {t}" for t in analysis.trends)

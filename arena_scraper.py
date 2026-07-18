@@ -1,11 +1,14 @@
 import datetime
 import json
+import logging
 import time
 import random
 from playwright.sync_api import sync_playwright
 
 from database import init_db, save_leaderboard_data
 from leaderboard_analyzer import run_leaderboard_analysis
+
+logger = logging.getLogger("arena_scraper")
 
 # ==========================================
 # ЧАСТЬ 1: СКРАПЕР (Получение HTML-кода)
@@ -30,11 +33,14 @@ def scrape(page, url):
 
     # --- ОБРАБОТКА БАННЕРА КУКИ ---
     try:
-        # Ищем кнопку принятия куки, чтобы она не перекрывала элементы
-        accept_button = page.locator("button", has_text="Accept").first
-        if accept_button.is_visible(timeout=2000):
-            accept_button.click()
-            page.wait_for_timeout(500) # Небольшая пауза после клика
+        # Ищем кнопку принятия куки по нескольким вариантам текста —
+        # разные баннеры (OneTrust, Cookiebot и т.п.) формулируют её по-разному
+        for label in ["Accept", "Accept All", "I Accept", "Agree", "Got it"]:
+            accept_button = page.locator("button", has_text=label).first
+            if accept_button.is_visible(timeout=1000):
+                accept_button.click()
+                page.wait_for_timeout(500)  # Небольшая пауза после клика
+                break
     except:
         pass
 
@@ -126,7 +132,9 @@ def collect_all_categories(category_urls):
     with sync_playwright() as playwright:
         # 1. Запуск браузера с нативными аргументами маскировки автоматизации
         browser = playwright.chromium.launch(
-            headless=True,  # Оставь False, чтобы видеть глазами прохождение первой ссылки
+            headless=True,
+            channel="chrome",  # настоящий установленный Chrome, а не bundled Chromium —
+                                # Cloudflare куда охотнее банит именно голый Chromium
             args=[
                 "--disable-blink-features=AutomationControlled",  # Отключает главный маркер робота navigator.webdriver
                 "--no-sandbox",
@@ -192,6 +200,19 @@ def collect_all_categories(category_urls):
                 all_data[category] = parsed_list
             except Exception as e:
                 print(f"[ОШИБКА] Не удалось собрать {category}: {e}")
+                logger.error(f"Не удалось собрать категорию '{category}' ({url}): {e!r}")
+                # Один повтор: антибот-челлендж часто флакует (проходит со второго
+                # раза), а не блокирует намертво — не сдаёмся с первой попытки.
+                print(f"[ПОВТОР] Пробуем категорию {category} ещё раз через паузу...")
+                time.sleep(random.uniform(5, 10))
+                try:
+                    scrape(page, url)
+                    parsed_list = parse(page)
+                    all_data[category] = parsed_list
+                    print(f"[ПОВТОР УСПЕШЕН] {category} собрана со второй попытки.")
+                except Exception as e2:
+                    print(f"[ОШИБКА] Повтор для {category} тоже провалился: {e2}")
+                    logger.error(f"Повтор для '{category}' тоже провалился: {e2!r}")
 
             # --- ЧЕЛОВЕКОПОДОБНАЯ ЗАДЕРЖКА ---
             # Случайная пауза от 3.5 до 7.5 секунд
@@ -201,6 +222,22 @@ def collect_all_categories(category_urls):
 
         print("\nЗакрываем браузер...")
         browser.close()
+
+    failed = [c for c in category_urls if c not in all_data]
+    if failed:
+        logger.error(
+            f"Скрапинг арены: {len(failed)}/{len(category_urls)} категорий "
+            f"провалились: {', '.join(failed)}"
+        )
+    if not all_data:
+        # Раньше в этом случае функция молча возвращала пустой снимок, save_to_db()
+        # его молча сохранял (0 строк), а вызывающий код (main.py:_refresh_leaderboard)
+        # никогда не видел исключения — отсюда пустые таблицы leaderboard* без единой
+        # строки в логах. Явно роняем пайплайн, если не собралась ВООБЩЕ ни одна категория.
+        raise RuntimeError(
+            "Все категории лидерборда провалились — вероятно, антибот-защита "
+            "(Cloudflare) блокирует скрапер. Снимок не сохранён."
+        )
 
     final_snapshot = {
         "fetched_at": fetched_at,
@@ -221,25 +258,28 @@ def save_to_db(data):
     run_leaderboard_analysis()
     print("[АНАЛИЗ] Готово.")
 
+# Единый источник правды для списка категорий арены — раньше этот же словарь
+# был продублирован ещё и в app.py (run_original_scraper_and_save), теперь
+# оба места импортируют отсюда.
+CATEGORY_URLS = {
+    "text": "https://arena.ai/leaderboard/text",
+    "vision": "https://arena.ai/leaderboard/vision",
+    "search": "https://arena.ai/leaderboard/search",
+    "document": "https://arena.ai/leaderboard/document",
+    "webdev": "https://arena.ai/leaderboard/code/webdev",
+    "image-to-webdev": "https://arena.ai/leaderboard/code/image-to-webdev",
+    "text-to-image": "https://arena.ai/leaderboard/text-to-image",
+    "image-edit": "https://arena.ai/leaderboard/image-edit",
+    "text-to-video": "https://arena.ai/leaderboard/text-to-video",
+    "image-to-video": "https://arena.ai/leaderboard/image-to-video",
+    "video-edit": "https://arena.ai/leaderboard/video-edit"
+}
+
+
 def main():
-    # Оставили только 11 стабильных категорий (убрали agent)
-    category_urls = {
-        "text": "https://arena.ai/leaderboard/text",
-        "vision": "https://arena.ai/leaderboard/vision",
-        "search": "https://arena.ai/leaderboard/search",
-        "document": "https://arena.ai/leaderboard/document",
-        "webdev": "https://arena.ai/leaderboard/code/webdev",
-        "image-to-webdev": "https://arena.ai/leaderboard/code/image-to-webdev",
-        "text-to-image": "https://arena.ai/leaderboard/text-to-image",
-        "image-edit": "https://arena.ai/leaderboard/image-edit",
-        "text-to-video": "https://arena.ai/leaderboard/text-to-video",
-        "image-to-video": "https://arena.ai/leaderboard/image-to-video",
-        "video-edit": "https://arena.ai/leaderboard/video-edit"
-    }
+    print(f"Запуск скрапера для {len(CATEGORY_URLS)} категорий...")
 
-    print(f"Запуск скрапера для {len(category_urls)} категорий...")
-
-    data = collect_all_categories(category_urls)
+    data = collect_all_categories(CATEGORY_URLS)
     save_to_db(data)
     print("\n[УСПЕХ] Сбор данных завершен!")
 

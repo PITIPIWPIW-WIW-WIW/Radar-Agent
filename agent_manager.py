@@ -38,7 +38,7 @@ def get_model() -> MistralModel:
             "MISTRAL_API_KEY не найден. Создай файл .env на основе .env.example "
             "и укажи там свой ключ."
         )
-    http_client = httpx.AsyncClient(timeout=30.0)
+    http_client = httpx.AsyncClient(timeout=60.0)
     return MistralModel(
         config.MISTRAL_MODEL_NAME,
         provider=MistralProvider(api_key=config.MISTRAL_API_KEY, http_client=http_client),
@@ -57,15 +57,30 @@ class AnalysisError(Exception):
     """Кидается, если агент не смог получить валидный структурированный ответ."""
 
 
-def _is_rate_limit_error(exception: BaseException) -> bool:
+def _is_retryable_error(exception: BaseException) -> bool:
+    """
+    True для ошибок, на которые имеет смысл ретраить с backoff:
+    - 429 (rate limit) от Mistral;
+    - сетевые/таймаут-ошибки httpx (ReadTimeout, ConnectTimeout, PoolTimeout,
+      ConnectError и т.п.) — у них str(exception) часто ПУСТОЙ, поэтому раньше
+      они не матчились ни под одно условие и падали без retry с пустым текстом
+      ошибки в логах.
+    """
     status_code = getattr(exception, "status_code", None)
     if status_code == 429:
         return True
-    return "429" in str(exception) or "rate limit" in str(exception).lower()
+    if isinstance(exception, (httpx.TimeoutException, httpx.TransportError)):
+        return True
+    text = str(exception).lower()
+    return "429" in text or "rate limit" in text
+
+
+# Оставлено для обратной совместимости (использовалось в старых импортах).
+_is_rate_limit_error = _is_retryable_error
 
 
 @retry(
-    retry=retry_if_exception(_is_rate_limit_error),
+    retry=retry_if_exception(_is_retryable_error),
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=1, min=1, max=30),  # 1s, 2s, 4s, 8s, ... до 30s
     before_sleep=before_sleep_log(logger, logging.WARNING),
@@ -112,7 +127,7 @@ def _get_leaderboard_agent() -> Agent:
 
 
 @retry(
-    retry=retry_if_exception(_is_rate_limit_error),
+    retry=retry_if_exception(_is_retryable_error),
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=1, min=1, max=30),
     before_sleep=before_sleep_log(logger, logging.WARNING),
@@ -155,8 +170,8 @@ def analyze_leaderboard(
         result = _call_leaderboard_agent(prompt)
         return result.output
     except Exception as e:
-        logger.error(f"Ошибка анализа лидерборда: {e}")
-        raise AnalysisError(f"Не удалось проанализировать лидерборд: {e}") from e
+        logger.error(f"Ошибка анализа лидерборда: {e!r}")
+        raise AnalysisError(f"Не удалось проанализировать лидерборд: {e!r}") from e
 
 
 def analyze_article(title: str, text: str) -> ArticleAnalysis:
@@ -172,5 +187,5 @@ def analyze_article(title: str, text: str) -> ArticleAnalysis:
         result = _call_agent(prompt)
         return result.output
     except Exception as e:
-        logger.error(f"Ошибка анализа статьи '{title}': {e}")
-        raise AnalysisError(f"Не удалось проанализировать статью '{title}': {e}") from e
+        logger.error(f"Ошибка анализа статьи '{title}': {e!r}")
+        raise AnalysisError(f"Не удалось проанализировать статью '{title}': {e!r}") from e

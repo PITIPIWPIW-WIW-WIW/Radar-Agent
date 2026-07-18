@@ -299,6 +299,9 @@ async def fetch_materials_via_mcp(query: str = "machine learning") -> list[dict]
                             "title": f"[Kaggle] {original['title']}",
                             "text": original["full_text"],
                             "source_url": original["url"],
+                            # Kaggle отдаёт и датасеты, и модели вперемешку —
+                            # используем реальный тип кандидата, а не общий "датасет".
+                            "source_type": "модель" if original["type"] == "model" else "датасет",
                         })
                 except ValidationError as val_err:
                     logger.error(f"Mistral нарушил контракт Pydantic-схемы: {val_err}")

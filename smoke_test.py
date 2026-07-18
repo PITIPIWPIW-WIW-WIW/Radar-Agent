@@ -2,8 +2,6 @@ import os
 import sys
 import traceback
 
-# Тестовая БД — отдельная от боевой app_database.db, чтобы не намусорить
-# в реальных данных при прогоне теста.
 TEST_DB_NAME = "smoke_test.db"
 
 PASSED = []
@@ -11,9 +9,6 @@ FAILED = []
 
 
 def check(name):
-    """Декоратор-раннер: ловит исключение, печатает результат, не падает
-    весь скрипт целиком на первой же проблеме — прогоняет все проверки
-    и показывает сводку в конце."""
     def decorator(fn):
         print(f"--- {name} ---")
         try:
@@ -30,15 +25,13 @@ def check(name):
 
 
 
-# 1. Импорты без ключа Mistral — ленивая инициализация должна работать
-
 
 @check("Импорт всех модулей без MISTRAL_API_KEY")
 def _():
     os.environ.pop("MISTRAL_API_KEY", None)
 
     import config
-    assert config.MISTRAL_API_KEY is None or True  # просто не должно упасть
+    assert config.MISTRAL_API_KEY is None or True  
 
     import dedup
     import agent_manager
@@ -74,12 +67,7 @@ def _():
     import agent_manager
     from unittest.mock import patch
 
-    # Патчим напрямую атрибут модуля, а не os.environ — config.py уже был
-    # импортирован в предыдущей проверке и закэшировал реальный ключ из .env
-    # (Python выполняет код модуля один раз, повторный import его не перечитывает).
     with patch.object(config, "MISTRAL_API_KEY", None):
-        # Сбрасываем закэшированный singleton модели, иначе agent_manager
-        # вернёт уже созданный ранее (с реальным ключом) объект.
         agent_manager._model = None
         try:
             agent_manager.get_model()
@@ -87,11 +75,10 @@ def _():
         except RuntimeError as e:
             assert "MISTRAL_API_KEY" in str(e)
         finally:
-            agent_manager._model = None  # не оставляем словленный сброс висеть
+            agent_manager._model = None  
 
 
 
-# 2. database.py — статьи, векторы, лидерборд с ротацией
 
 
 @check("database.py: статьи и векторы (базовый CRUD)")
@@ -124,7 +111,7 @@ def _():
 @check("database.py: лидерборд с ротацией (максимум 2 снимка)")
 def _():
     import database
-    database.DB_NAME = TEST_DB_NAME  # тот же файл, что и в предыдущей проверке
+    database.DB_NAME = TEST_DB_NAME  
 
     snap1 = {"fetched_at": "2026-07-01", "categories": {"text": [{"name": "Model-A", "rating": 1000}]}}
     snap2 = {"fetched_at": "2026-07-02", "categories": {"text": [{"name": "Model-B", "rating": 1100}]}}
@@ -141,7 +128,6 @@ def _():
     assert "2026-07-01" not in dates, "самый старый снимок должен был удалиться"
     assert "2026-07-02" in dates and "2026-07-03" in dates
 
-# 3. dedup.py — логика дедупликации (без реальной модели эмбеддингов)
 
 
 @check("dedup.py: cosine_similarity и is_duplicate")
@@ -164,7 +150,6 @@ def _():
 
 
 
-# 4. main.py — полный прогон с замоканными Mistral и эмбеддингами
 
 
 @check("main.py: полный прогон main() с реальной БД (Mistral/эмбеддинги замоканы)")
@@ -180,13 +165,7 @@ def _():
     def fake_text_to_vector(text):
         seed = int(hashlib.md5(text.encode()).hexdigest(), 16) % (2**32)
         rng = np.random.default_rng(seed)
-        # ВАЖНО: rng.random() даёт числа только в диапазоне [0, 1) — такие
-        # векторы все "смотрят" в одну сторону (положительный ортант), и их
-        # косинусное сходство систематически завышено (~0.75+) независимо
-        # от контента, что ложно триггерит is_duplicate() на непохожих
-        # текстах. rng.standard_normal() даёт значения вокруг нуля в обе
-        # стороны — так случайные векторы действительно почти ортогональны,
-        # как и должны быть настоящие эмбеддинги непохожих текстов.
+
         return rng.standard_normal(384).astype(np.float32)
 
     with patch("main.analyze_article", return_value=fake_analysis), \
@@ -201,16 +180,14 @@ def _():
         main.main()
 
         articles = database.get_all_articles()
-        # Реальные источники (HF/arXiv/GitHub) в тестовом окружении почти
-        # наверняка недоступны — это ОЖИДАЕМО и не должно ронять тест.
-        # Важно, что пайплайн не упал и мок-статьи дошли до сохранения.
+
         assert len(articles) >= 2, (
             f"ожидали минимум 2 мок-статьи в БД, получили {len(articles)} — "
             "main() мог упасть до сохранения"
         )
 
 
-# 5. arena_scraper.py — save_to_db реально пишет в БД
+
 
 
 @check("arena_scraper.py: save_to_db пишет в реальную БД")
@@ -230,9 +207,7 @@ def _():
     assert found, "снимок от arena_scraper.save_to_db() не нашёлся в БД"
 
 
-# =====================================================================
-# ИТОГ
-# =====================================================================
+
 
 if __name__ == "__main__":
     print("=" * 60)

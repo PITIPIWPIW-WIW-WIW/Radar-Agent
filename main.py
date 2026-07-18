@@ -5,12 +5,14 @@ import numpy as np
 import config
 from dedup import text_to_vector, is_duplicate
 from agent_manager import analyze_article, AnalysisError
-from database import init_db, get_all_vectors, save_vector, save_article, delete_old_vectors
+from database import init_db, get_all_vectors, save_vector, save_article, delete_old_vectors, save_trending_models
 from FetcherHF import stream_hf_articles
 from FetcherHFDatasets import stream_hf_datasets
 from mcp_fetcher_kaggle import stream_kaggle_articles
 from mcp_fetcher_arxiv import stream_arxiv_articles
 from github_fetcher import stream_github_articles
+from mcp_fetcher_hf_trending import fetch_trending_models
+import arena_scraper
 
 
 class _BenignProactorNoiseFilter(logging.Filter):
@@ -60,33 +62,70 @@ def _fake_articles():
         yield article
 
 
-def stream_all_new_articles():
-    yield from _fake_articles()
+def _tag_source_type(articles, source_type: str):
+    for article in articles:
+        # Не затираем тип, если фетчер уже проставил свой (см. mcp_fetcher_kaggle.py,
+        # где вперемешку датасеты и модели — общий ярлык для всего источника не подходит).
+        article.setdefault("source_type", source_type)
+        yield article
 
+
+def stream_all_new_articles():
     try:
-        yield from stream_hf_articles("LLM")
+        yield from _tag_source_type(stream_hf_articles("LLM"), "модель")
     except Exception as e:
         logger.error(f"Источник Hugging Face (модели) недоступен: {e}")
 
     try:
-        yield from stream_hf_datasets("machine learning")
+        yield from _tag_source_type(stream_hf_datasets("machine learning"), "датасет")
     except Exception as e:
         logger.error(f"Источник Hugging Face (датасеты) недоступен: {e}")
 
     try:
-        yield from stream_arxiv_articles("large language models")
+        yield from _tag_source_type(stream_arxiv_articles("large language models"), "статья")
     except Exception as e:
         logger.error(f"Источник arXiv недоступен: {e}")
 
     try:
-        yield from stream_github_articles()
+        yield from _tag_source_type(stream_github_articles(), "репозиторий")
     except Exception as e:
         logger.error(f"Источник GitHub недоступен: {e}")
 
     try:
-        yield from stream_kaggle_articles()
+        yield from _tag_source_type(stream_kaggle_articles(), "датасет")
     except Exception as e:
         logger.error(f"Источник Kaggle недоступен: {e}")
+
+# Тренды HF — отдельный пайплайн: без дедупа и LLM-анализа, просто снимок
+# витрины (name/downloads/likes/tags), который save_trending_models() каждый
+# раз полностью перезаписывает. Раньше этот шаг дёргался только из app.py
+# через /trending/refresh — теперь синхронизируем и при прогоне main.py.
+def _refresh_trending_models():
+    try:
+        models = fetch_trending_models(limit=15)
+        if not models:
+            logger.info("Трендовые модели HF не получены (пусто или MCP-сервер недоступен).")
+            return
+        save_trending_models(models)
+        logger.info(f"Витрина трендовых моделей HF обновлена: {len(models)} шт.")
+    except Exception as e:
+        logger.error(f"Источник HF Trending недоступен: {e}")
+
+
+# Полный цикл лидерборда: скрапинг арены (Playwright, ~1-2 мин) + сохранение
+# снимка + инкрементальный анализ — всё это уже собрано в arena_scraper.save_to_db().
+# Раньше сюда попадал только сам скрапинг через отдельный /scrape в app.py;
+# теперь весь пайплайн (статьи + тренды + лидерборд) обновляется одним прогоном
+# main.py, без ручных дозапусков.
+def _refresh_leaderboard():
+    try:
+        data = arena_scraper.collect_all_categories(arena_scraper.CATEGORY_URLS)
+        arena_scraper.save_to_db(data)  # save_leaderboard_data() + run_leaderboard_analysis() внутри
+        rows = sum(len(v) for v in data["categories"].values())
+        logger.info(f"Лидерборд обновлён: {rows} строк по {len(data['categories'])} категориям.")
+    except Exception as e:
+        logger.error(f"Скрапинг/анализ лидерборда не выполнен: {e!r}")
+
 
 # Главный цикл 
 
@@ -95,6 +134,13 @@ def main():
 
     # Создаёт таблицы, если их ещё нет (безопасно вызывать при каждом запуске)
     init_db()
+
+    # Тренды HF не участвуют в дедупе/цикле статей — обновляем отдельным шагом
+    _refresh_trending_models()
+
+    # Лидерборд арены — тоже независимый пайплайн, тяжёлый (Playwright),
+    # поэтому запускаем целиком отдельным шагом, а не смешиваем со статьями
+    _refresh_leaderboard()
 
     # Чистим только устаревший кэш векторов-дублей (не сами статьи —
     # они должны копиться со всех прогонов, это база знаний, а не разовый снимок)
@@ -140,6 +186,7 @@ def main():
             "summary": analysis.summary,
             "source_url": source_url,
             "tags": analysis.tags,  # список строк — database.py сам делает json.dumps
+            "source_type": article.get("source_type", "статья"),
         }
         save_article(payload)
         processed += 1

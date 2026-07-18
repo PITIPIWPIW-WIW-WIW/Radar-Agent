@@ -1,0 +1,48 @@
+services:
+  # FastAPI-бэкенд (app.py) — отдаёт /leaderboard, /articles, /trending/* и т.д.
+  api:
+    build: .
+    command: uvicorn app:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      DB_NAME: /app/data/app_database.db
+      LOG_FILE: /app/data/app.log
+      ERROR_LOG_FILE: /app/data/errors.log
+      HF_TRENDING_MCP_PATH: /app/hf-trending-mcp
+    volumes:
+      - data:/app/data
+    restart: unless-stopped
+
+  # Streamlit-фронтенд (frontend.py) — дергает api по HTTP
+  frontend:
+    build: .
+    command: streamlit run frontend.py --server.address 0.0.0.0 --server.port 8501
+    ports:
+      - "8501:8501"
+    env_file: .env
+    environment:
+      API_URL: http://api:8000
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # Планировщик (scheduler.py) — раз в 3 дня отдельным подпроцессом запускает
+  # main.py: скрапинг арены (Playwright+Chrome) + сбор статей/трендов + LLM-анализ
+  worker:
+    build: .
+    command: python scheduler.py
+    env_file: .env
+    environment:
+      DB_NAME: /app/data/app_database.db
+      LOG_FILE: /app/data/app.log
+      ERROR_LOG_FILE: /app/data/errors.log
+      HF_TRENDING_MCP_PATH: /app/hf-trending-mcp
+    volumes:
+      - data:/app/data
+    restart: unless-stopped
+
+volumes:
+  # Общая БД + логи между api и worker — не теряются при пересборке/рестарте
+  data:

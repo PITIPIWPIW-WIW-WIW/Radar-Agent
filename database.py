@@ -3,7 +3,9 @@ import json
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 
-DB_NAME = 'app_database.db'
+import config
+
+DB_NAME = config.DB_NAME
 
 
 @contextmanager
@@ -32,8 +34,15 @@ def init_db():
             summary TEXT NOT NULL,
             source_url TEXT NOT NULL,
             tags TEXT NOT NULL,
+            source_type TEXT NOT NULL DEFAULT 'статья',
             added_at TEXT DEFAULT CURRENT_TIMESTAMP
         );""")
+
+        # Миграция для БД, созданных до появления source_type — CREATE TABLE
+        # IF NOT EXISTS не добавит колонку в уже существующую таблицу.
+        existing_cols = {row['name'] for row in cursor.execute("PRAGMA table_info(articles)")}
+        if 'source_type' not in existing_cols:
+            cursor.execute("ALTER TABLE articles ADD COLUMN source_type TEXT NOT NULL DEFAULT 'статья'")
         cursor.execute('''CREATE TABLE IF NOT EXISTS leaderboard (
             category TEXT NOT NULL,
             model_name TEXT NOT NULL,
@@ -51,8 +60,14 @@ def init_db():
             downloads INTEGER NOT NULL,
             likes INTEGER NOT NULL,
             tags TEXT NOT NULL,
+            source_url TEXT NOT NULL DEFAULT '',
             fetched_at TEXT DEFAULT CURRENT_TIMESTAMP
         );''')
+
+        # Миграция для БД, созданных до появления source_url в hf_trending
+        trending_cols = {row['name'] for row in cursor.execute("PRAGMA table_info(hf_trending)")}
+        if 'source_url' not in trending_cols:
+            cursor.execute("ALTER TABLE hf_trending ADD COLUMN source_url TEXT NOT NULL DEFAULT ''")
         conn.commit()
 
 
@@ -73,16 +88,28 @@ def get_all_vectors():
 
 
 def save_article(article: dict) -> None:
+    # source_type: 'статья' | 'модель' | 'датасет' | 'репозиторий' — проставляется
+    # фетчером через main.py (_tag_source_type). Если источник его не передал,
+    # по умолчанию считаем это обычной статьёй, чтобы не сломать старые вызовы.
     with get_connection() as conn:
         conn.execute('''
-            INSERT INTO articles (title, summary, source_url, tags)
-            VALUES (?, ?, ?, ?)
-        ''', (article['title'], article['summary'], article['source_url'], json.dumps(article['tags'])))
+            INSERT INTO articles (title, summary, source_url, tags, source_type)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (
+            article['title'],
+            article['summary'],
+            article['source_url'],
+            json.dumps(article['tags']),
+            article.get('source_type', 'статья'),
+        ))
 
 
 def get_all_articles() -> list[dict]:
     with get_connection() as conn:
-        cursor = conn.execute('SELECT * FROM articles')
+        # Без ORDER BY SQLite отдаёт по rowid (порядок вставки) — старые статьи
+        # были наверху. Сортируем по added_at, новые сначала; rowid DESC как
+        # тай-брейк для записей с одинаковой секундой добавления.
+        cursor = conn.execute('SELECT rowid, * FROM articles ORDER BY added_at DESC, rowid DESC')
         articles = []
         for row in cursor:
             article = dict(row)
@@ -176,16 +203,24 @@ def get_analysis_history(limit: int = 10) -> list[dict]:
 def save_trending_models(models: list[dict]) -> None:
     """
     Полностью заменяет предыдущую витрину трендовых моделей новой.
-    models: [{"name": str, "downloads": int, "likes": int, "tags": list[str]}, ...]
+    models: [{"name": str, "downloads": int, "likes": int, "tags": list[str], "url": str}, ...]
     """
     fetched_at = datetime.utcnow().isoformat()
     with get_connection() as conn:
         conn.execute('DELETE FROM hf_trending')
         conn.executemany('''
-            INSERT INTO hf_trending (model_name, downloads, likes, tags, fetched_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO hf_trending (model_name, downloads, likes, tags, source_url, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?)
         ''', [
-            (m["name"], m["downloads"], m["likes"], json.dumps(m["tags"]), fetched_at)
+            (
+                m["name"],
+                m["downloads"],
+                m["likes"],
+                json.dumps(m["tags"]),
+                # url может не прийти со старых вызовов — считаем сами по имени модели
+                m.get("url") or f"https://huggingface.co/{m['name']}",
+                fetched_at,
+            )
             for m in models
         ])
 

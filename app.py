@@ -28,20 +28,9 @@ def on_startup():
 def run_original_scraper_and_save():
     print("[БЭКЕНД] Запуск оригинального утвержденного скрапера...")
 
-    # Передаем словарь URL-адресов точно в таком виде, как в оригинальном main() скрапера
-    category_urls = {
-        "text": "https://arena.ai/leaderboard/text",
-        "vision": "https://arena.ai/leaderboard/vision",
-        "search": "https://arena.ai/leaderboard/search",
-        "document": "https://arena.ai/leaderboard/document",
-        "webdev": "https://arena.ai/leaderboard/code/webdev",
-        "image-to-webdev": "https://arena.ai/leaderboard/code/image-to-webdev",
-        "text-to-image": "https://arena.ai/leaderboard/text-to-image",
-        "image-edit": "https://arena.ai/leaderboard/image-edit",
-        "text-to-video": "https://arena.ai/leaderboard/text-to-video",
-        "image-to-video": "https://arena.ai/leaderboard/image-to-video",
-        "video-edit": "https://arena.ai/leaderboard/video-edit"
-    }
+    # Единый список категорий — теперь берём из arena_scraper.CATEGORY_URLS,
+    # чтобы не держать одну и ту же копию в двух местах (было тут и в arena_scraper.main()).
+    category_urls = arena_scraper.CATEGORY_URLS
 
     try:
         # 1. Запускаем сбор данных (функция вернет final_snapshot)

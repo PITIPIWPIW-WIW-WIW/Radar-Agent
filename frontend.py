@@ -1,481 +1,299 @@
-#для запуска в первой консоли uvicorn app:app --reload, во второй python -m streamlit run frontend.py
+# для запуска: uvicorn app:app --reload (бэкенд), затем python -m streamlit run frontend.py (фронтенд)
+
+import os
 import streamlit as st
 import requests
-import pandas as pd
 
-st.set_page_config(page_title="AI Dashboard", layout="wide", initial_sidebar_state="expanded")
+# Устанавливаем широкую компоновку и принудительно открываем сайдбар
+st.set_page_config(layout="wide", initial_sidebar_state="expanded")
 
+# --- ПОЛНОСТЬЮ ПЕРЕПИСАННЫЙ CSS ---
 custom_css = """
 <style>
+    /* 1. Глобальные переменные: жесткое удаление дефолтных серых рамок Streamlit */
+    :root {
+        --border-color: #2D1B4E !important;
+        --secondary-background-color: #0A0A0F !important;
+        --primary-color: #8B5CF6 !important;
+    }
 
-    header {visibility: hidden !important;}
-    .block-container {padding-top: 1.5rem !important; max-width: 96% !important;}
+    /* 2. Глобальный фон */
+    [data-testid="stAppViewContainer"], 
+    .stApp { 
+        background-color: #0A0A0F !important; 
+    }
 
-    [data-testid="collapsedControl"] {
+    /* 3. Жесткая фиксация сайдбара и удаление серой правой границы */
+    [data-testid="stSidebar"] { 
+        background-color: #0A0A0F !important; 
+        border-right: 1px solid #2D1B4E !important; 
+        width: 260px !important;
+        min-width: 260px !important;
+        max-width: 260px !important;
+        transform: none !important;
         visibility: visible !important;
-        background-color: #0a0f1c !important; /* Темный фон */
-        border-right: 2px solid #10b981 !important; /* Зеленая рамка справа */
-        border-top: 2px solid #10b981 !important;
-        border-bottom: 2px solid #10b981 !important;
-        border-radius: 0 10px 10px 0 !important; /* Закругляем только правые углы */
-        top: 15px !important; /* Смещаем чуть ниже верхнего края */
-        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.6) !important;
-        transition: all 0.3s ease !important;
-        z-index: 999999 !important;
-    }
-    
-    [data-testid="collapsedControl"]:hover {
-        box-shadow: 0 0 15px rgba(16, 185, 129, 0.8) !important;
-        transform: scale(1.05) !important;
-    }
-    [data-testid="collapsedControl"] svg {
-        color: #10b981 !important;
-        fill: #10b981 !important;
+        position: relative !important;
     }
 
-    [data-testid="stSidebar"] button {
-        color: #10b981 !important;
-    }
-    [data-testid="stSidebar"] button:hover {
-        background-color: rgba(16, 185, 129, 0.1) !important;
-    }
-    [data-testid="stSidebar"] button svg {
-        fill: #10b981 !important;
-    }
-
-    [data-testid="stAppViewContainer"] {
-        background-color: #050810 !important; 
-    }
-    [data-testid="stSidebar"] {
-        background-color: #080c17 !important;
-        border-right: 1px solid #10b981 !important;
-    }
-    p, span, h1, h2, h3, h4, h5, h6, label, li {
-        color: #f8fafc !important;
-    }
-    [data-testid="stVerticalBlockBorderWrapper"] {
-        border-radius: 12px !important;
-        border: 2px solid #10b981 !important; 
-        background-color: #0a0f1c !important; 
-        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.8) !important;
-        transition: all 0.3s ease !important;
-    }
-    [data-testid="stVerticalBlockBorderWrapper"]:hover {
-        transform: translateY(-5px) !important;
-        border-color: #34d399 !important; 
-        box-shadow: 0 0 25px rgba(16, 185, 129, 0.6) !important; /
+    /* 4. ПОЛНОЕ УДАЛЕНИЕ КНОПОК СКРЫТИЯ (для всех версий Streamlit) */
+    [data-testid="collapsedControl"],
+    [data-testid="stSidebarCollapseButton"],
+    [data-testid="stSidebarNav"] button,
+    section[data-testid="stSidebar"] button[kind="icon"] {
+        display: none !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+        width: 0 !important;
+        height: 0 !important;
+        position: absolute !important;
+        z-index: -100 !important;
     }
 
-    div.stButton > button {
-        border-radius: 8px !important;
-        font-weight: 700 !important;
-        border: 1px solid #10b981 !important;
+    /* 5. Скрытие кнопки Deploy и стандартного меню Streamlit */
+    #MainMenu, header, [data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"] {
+        display: none !important;
+    }
+
+    /* 6. Компенсация отступа сверху после удаления хедера */
+    .block-container { 
+        padding-top: 2rem !important; 
+        max-width: 98% !important; 
+    }
+
+    /* 7. Типографика и удаление любых серых линий-разделителей */
+    p, span, label, li, .stMarkdown, div[data-baseweb="select"] { color: #A1A1AA !important; font-family: 'Inter', sans-serif; }
+    h1, h2, h3, h4, h5, h6, strong { color: #FFFFFF !important; font-weight: 600 !important; }
+
+    hr { 
+        border-color: #2D1B4E !important; 
+        border-bottom: 1px solid #2D1B4E !important; 
         background-color: transparent !important;
-        color: #10b981 !important;
-        transition: all 0.2s ease !important;
-    }
-    div.stButton > button:hover {
-        background-color: #10b981 !important;
-        color: #050810 !important; /* Текст становится темным */
-        box-shadow: 0 0 15px rgba(16, 185, 129, 0.5) !important;
-        transform: scale(1.02);
     }
 
-    /* Главная кнопка (сразу залита зеленым) */
-    div.stButton > button[kind="primary"] {
-        background-color: #10b981 !important; 
-        color: #050810 !important;
-        border: none !important;
+    /* 8. Инпуты и селекты (очистка серых рамок) */
+    div[data-baseweb="select"] > div, 
+    div[data-baseweb="input"] > div,
+    div[data-baseweb="number-input"] > div,
+    div[data-baseweb="multiselect"] > div {
+        background-color: #12121A !important;
+        border: 1px solid #2D1B4E !important;
+        border-radius: 8px !important;
+        color: #FFFFFF !important;
     }
-    div.stButton > button[kind="primary"]:hover {
-        background-color: #34d399 !important;
-        box-shadow: 0 0 25px rgba(16, 185, 129, 0.8) !important;
-    }
-
-    [data-testid="stMetricValue"] {
-        font-weight: 900 !important;
-        font-size: 2.5rem !important;
-        color: #10b981 !important; /
-        text-shadow: 0 0 10px rgba(16, 185, 129, 0.3) !important;
+    div[data-baseweb="select"] > div:hover, 
+    div[data-baseweb="input"] > div:hover,
+    div[data-baseweb="multiselect"] > div:hover {
+        border-color: #8B5CF6 !important;
     }
 
-    hr {
-        border-color: rgba(16, 185, 129, 0.3) !important;
+    /* Теги в multiselect */
+    span[data-baseweb="tag"] {
+        background-color: #1E1B4B !important;
+        color: #C084FC !important;
+        border: 1px solid #3B0764 !important;
+    }
+
+    /* 9. Карточки контента */
+    .custom-card {
+        background: linear-gradient(
+            180deg,
+            #1A0E2B 0%,
+            #160A25 100%
+        ) !important;
+        border: 1px solid #6D28D9 !important;
+        border-radius: 18px !important;
+        padding: 24px 28px !important;
+        margin-bottom: 20px !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,.03),
+            0 8px 22px rgba(124,58,237,.10);
+        transition: all .25s ease;
+    }
+    .custom-card:hover {
+        transform: translateY(-3px);
+        border-color: #A855F7 !important;
+        background: linear-gradient(
+            180deg,
+            #211036 0%,
+            #190C2A 100%
+        ) !important;
+        box-shadow: 0 15px 40px rgba(124,58,237,.25);
+    }
+
+    /* Стили для тегов в карточках статей */
+    .article-tags { margin-bottom: 12px; display: flex; gap: 6px; flex-wrap: wrap; }
+    .article-tag { 
+        background-color: #1E1B4B; 
+        color: #C084FC; 
+        padding: 4px 10px; 
+        border-radius: 6px; 
+        font-size: 0.75rem; 
+        border: 1px solid #3B0764; 
     }
 </style>
 """
 st.markdown(custom_css, unsafe_allow_html=True)
 
 
-def fetch_leaderboard():
+# --- БЭКЕНД ИНТЕГРАЦИЯ ---
+# В докере сервисы общаются по именам сервисов (api), а не через localhost —
+# localhost внутри контейнера frontend это сам контейнер frontend, а не api.
+API_URL = os.getenv("API_URL", "http://localhost:8000")
+
+
+def fetch_data(endpoint):
     try:
-        response = requests.get("http://localhost:8000/leaderboard", timeout=5)
-        if response.status_code == 200:
-            return response.json()
-    except requests.exceptions.ConnectionError:
-        try:
-            response = requests.get("http://127.0.0.1:8000/leaderboard", timeout=5)
-            if response.status_code == 200:
-                return response.json()
-        except requests.exceptions.ConnectionError:
-            return {"status": "connect_error", "data": []}
-    return {"status": "error", "message": "Ошибка сервера", "data": []}
+        res = requests.get(f"{API_URL}/{endpoint}", timeout=5)
+        return res.json() if res.status_code == 200 else {"status": "error", "data": []}
+    except:
+        return {"status": "connect_error", "data": []}
 
 
-def fetch_analysis():
-    try:
-        response = requests.get("http://localhost:8000/leaderboard/analysis", timeout=5)
-        if response.status_code == 200:
-            return response.json()
-    except requests.exceptions.ConnectionError:
-        try:
-            response = requests.get("http://127.0.0.1:8000/leaderboard/analysis", timeout=5)
-            if response.status_code == 200:
-                return response.json()
-        except requests.exceptions.ConnectionError:
-            return {"status": "connect_error", "data": []}
-    return {"status": "error", "message": "Ошибка сервера", "data": []}
+leaderboard_res = fetch_data("leaderboard")
+trending_res = fetch_data("trending/models")
+articles_res = fetch_data("articles")
 
+# Парсинг реальных данных из бэкенда
+leaderboard_records = []
+unique_models = set()
+unique_categories = set()
 
-def fetch_trending():
-    try:
-        response = requests.get("http://localhost:8000/trending/models", timeout=5)
-        if response.status_code == 200:
-            return response.json()
-    except requests.exceptions.ConnectionError:
-        try:
-            response = requests.get("http://127.0.0.1:8000/trending/models", timeout=5)
-            if response.status_code == 200:
-                return response.json()
-        except requests.exceptions.ConnectionError:
-            return {"status": "connect_error", "data": []}
-    return {"status": "error", "message": "Ошибка сервера", "data": []}
+if leaderboard_res.get("status") == "success" and leaderboard_res.get("data"):
+    snapshots = leaderboard_res["data"]
+    for snap in snapshots:
+        for cat, models in snap.get("categories", {}).items():
+            unique_categories.add(cat)
+            for m in models:
+                unique_models.add(m.get("name"))
+                leaderboard_records.append({
+                    "category": cat,
+                    "model_name": m.get("name"),
+                    "rating": m.get("rating"),
+                    "fetched_at": snap.get("fetched_at")
+                })
 
+trend_list = trending_res.get("data", []) if trending_res.get("status") == "success" else []
+article_list = articles_res.get("data", []) if articles_res.get("status") == "success" else []
 
-def fetch_articles():
-    try:
-        response = requests.get("http://localhost:8000/articles", timeout=5)
-        if response.status_code == 200:
-            return response.json()
-    except requests.exceptions.ConnectionError:
-        try:
-            response = requests.get("http://127.0.0.1:8000/articles", timeout=5)
-            if response.status_code == 200:
-                return response.json()
-        except requests.exceptions.ConnectionError:
-            return {"status": "connect_error", "data": []}
-    return {"status": "error", "message": "Ошибка сервера", "data": []}
+# Имитация системы тегов для статей
+available_tags = ["LLM", "RLHF", "Vision", "Agents", "Optimization", "Open-Source"]
+for i, art in enumerate(article_list):
+    if "tags" not in art:
+        art["tags"] = [available_tags[i % len(available_tags)], available_tags[(i + 2) % len(available_tags)]]
 
+# --- НАВИГАЦИЯ (СВЕРХУ) ---
 
-st.sidebar.title("Меню приложения")
-page = st.sidebar.radio(
-    "Выберите раздел:",
-    ["Лидерборд моделей", "Трендовые модели HF", "База статей"]
-)
-st.sidebar.divider()
+# Меню вкладок
+page = st.radio("Разделы", ["Лидерборд моделей", "Трендовые модели HF", "База статей"],
+                horizontal=True, label_visibility="collapsed")
+st.divider()
+
+# --- СЛЕВА: ФИЛЬТРЫ ДЛЯ ТЕКУЩЕЙ ВКЛАДКИ ---
+with st.sidebar:
+    st.markdown("<h3 style='margin-bottom: 1.5rem; color: #FFFFFF;'>Панель</h3>", unsafe_allow_html=True)
+
+    if page == "Лидерборд моделей":
+        st.markdown("<h5 style='color:#FFFFFF; margin-bottom:10px;'>Фильтры лидерборда</h5>", unsafe_allow_html=True)
+        cats = sorted(list(unique_categories)) if unique_categories else ["Все категории"]
+        selected_cat = st.selectbox("Категория", ["Все категории"] + cats)
+
+    elif page == "Трендовые модели HF":
+        st.markdown("<h5 style='color:#FFFFFF; margin-bottom:10px;'>Фильтры</h5>", unsafe_allow_html=True)
+        search_hf = st.text_input("Поиск по названию модели")
+        min_dl = st.number_input("Мин. скачиваний", value=0, step=1000)
+
+        sort_by = st.selectbox("Сортировать по", ["Скачиваниям", "Лайкам"])
+        sort_order = st.selectbox("Порядок", ["По убыванию", "По возрастанию"])
+
+    elif page == "База статей":
+        st.markdown("<h5 style='color:#FFFFFF; margin-bottom:10px;'>Фильтры базы знаний</h5>", unsafe_allow_html=True)
+        search_art = st.text_input("Ключевые слова")
+        selected_tags = st.multiselect("Поиск по тегам", available_tags, placeholder="Выберите теги...")
+        available_types = sorted({a.get("source_type", "статья") for a in article_list}) or ["статья"]
+        selected_types = st.multiselect("Тип материала", available_types, placeholder="Все типы...")
+
+# --- ЛОГИКА ОТРЕСОВКИ СТРАНИЦ ---
 
 if page == "Лидерборд моделей":
-    st.title("История снимков лидерборда Arena.ai")
+    st.markdown("<h1>Лидерборд моделей</h1>", unsafe_allow_html=True)
 
-    col_refresh, col_scrape = st.columns([1, 3])
-    with col_refresh:
-        st.button("Обновить дашборд", use_container_width=True)
-    with col_scrape:
-        if st.button("Запустить живой сбор данных с Arena.ai", type="primary", use_container_width=True):
-            try:
-                try:
-                    res = requests.post("http://localhost:8000/scrape", timeout=5).json()
-                except requests.exceptions.ConnectionError:
-                    res = requests.post("http://127.0.0.1:8000/scrape", timeout=5).json()
+    with st.expander("Как рассчитывается рейтинг Elo?"):
+        st.write(
+            "Рейтинг Elo вычисляется на основе результатов попарных «слепых» тестирований. Пользователи или автоматические бенчмарки оценивают ответы двух анонимных моделей на один и тот же промпт. Если модель побеждает, её рейтинг повышается, а у проигравшей — снижается. Величина изменения рейтинга зависит от разницы их баллов до матча: победа над сильным конкурентом (с высоким Elo) приносит значительно больше баллов, чем победа над слабым.")
 
-                if res.get("status") == "success":
-                    st.info(
-                        "Утвержденный парсер запущен на бэкенде в фоновом режиме! Подождите около 1.5 минут и обновите дашборд.")
-                else:
-                    st.error("Не удалось запустить парсер.")
-            except Exception as e:
-                st.error(f"Ошибка запроса к бэкенду: {e}")
+    st.markdown("<div style='margin-top: 1.5rem;'></div>", unsafe_allow_html=True)
 
-    # --- Блок аналитики: не сырые цифры, а накопительный ИИ-анализ ---
-    analysis_response = fetch_analysis()
-    if analysis_response.get("status") == "success" and analysis_response.get("data"):
-        analysis_history = analysis_response["data"]
-        latest = analysis_history[0]
+    filtered = leaderboard_records
+    if selected_cat != "Все категории":
+        filtered = [r for r in filtered if r["category"] == selected_cat]
 
-        st.subheader("Аналитика недели")
-        st.caption(f"Снимок: {latest['fetched_at']}")
-        st.write(latest["analysis_text"])
-
-        if len(analysis_history) > 1:
-            with st.expander(f"История предыдущих анализов ({len(analysis_history) - 1})"):
-                for past in analysis_history[1:]:
-                    st.markdown(f"**Снимок: {past['fetched_at']}**")
-                    st.write(past["analysis_text"])
-                    st.divider()
+    if filtered:
+        filtered = sorted(filtered, key=lambda x: x.get("rating", 0), reverse=True)
+        for idx, rec in enumerate(filtered):
+            st.markdown(
+                f'<div class="custom-card"><div style="display:flex; justify-content:space-between; align-items:center;"><div><strong style="font-size:1.1rem; color:#FFFFFF;">#{idx + 1} {rec["model_name"]}</strong><div style="font-size:0.8rem; color:#8B5CF6; margin-top:2px;">{rec["category"].upper()}</div></div><div style="font-size:1.2rem; font-weight:700; color:#A78BFA;">{rec["rating"]}</div></div></div>',
+                unsafe_allow_html=True)
     else:
-        st.info("Анализ ещё не построен — запустите сбор данных, чтобы получить первый анализ.")
-
-    st.write("---")
-
-    api_response = fetch_leaderboard()
-
-    if api_response.get("status") == "success" and api_response.get("data"):
-        snapshots = api_response["data"]  # от новых к старым (см. get_all_leaderboard_snapshots)
-        leaderboard_records = []
-
-        # Рейтинги из предыдущего (второго по счёту) снимка — чтобы посчитать Δ
-        # для каждой модели в текущем снимке. Ключ: (категория, модель).
-        prev_ratings = {}
-        if len(snapshots) > 1:
-            for category_name, models_list in snapshots[1].get("categories", {}).items():
-                for model in models_list:
-                    key = (category_name.strip(), model.get("name", "").strip())
-                    prev_ratings[key] = model.get("rating", 0)
-
-        for snap_idx, snapshot in enumerate(snapshots):
-            raw_fetched_at = snapshot.get("fetched_at", "Неизвестная дата")
-            if "T" in raw_fetched_at:
-                date_part, time_part = raw_fetched_at.split("T")
-                fetched_at = f"{date_part} {time_part.split('.')[0]}"
-            else:
-                fetched_at = raw_fetched_at
-
-            categories = snapshot.get("categories", {})
-            for category_name, models_list in categories.items():
-                for model in models_list:
-                    rating = model.get("rating", 0)
-                    model_name = model.get("name", "Без имени").strip()
-                    category = category_name.strip()
-
-                    # Δ считаем только для самого свежего снимка — сравнивать
-                    # прошлый снимок сам с собой нет смысла
-                    delta = None
-                    if snap_idx == 0:
-                        key = (category, model_name)
-                        if key in prev_ratings:
-                            delta = rating - prev_ratings[key]
-
-                    leaderboard_records.append({
-                        "fetched_at": fetched_at,
-                        "category": category,
-                        "model_name": model_name,
-                        "rating": rating,
-                        "delta": delta,
-                    })
-
-        st.sidebar.header("Панель сравнения моделей")
-
-        unique_categories = sorted(list(set(r["category"] for r in leaderboard_records)))
-        selected_category = st.sidebar.selectbox("Категория:", ["Все категории"] + unique_categories)
-
-        unique_dates = sorted(list(set(r["fetched_at"] for r in leaderboard_records)), reverse=True)
-        # Раньше по умолчанию было "Все даты" — это склеивало все хранимые снимки
-        # (обычно 2) в один список, и каждая модель показывалась дважды.
-        # Теперь по умолчанию (index=0) показываем только последний снимок,
-        # а "Все даты" — просто опция в конце списка, для тех, кто явно хочет
-        # сравнить снимки между собой.
-        date_options = unique_dates + ["Все даты"]
-        selected_date = st.sidebar.selectbox("Дата снимка:", date_options, index=0)
-
-        search_query = st.sidebar.text_input("Поиск модели:")
-
-        filtered_records = leaderboard_records
-        if selected_category != "Все категории":
-            filtered_records = [r for r in filtered_records if r["category"] == selected_category]
-        if selected_date != "Все даты":
-            filtered_records = [r for r in filtered_records if r["fetched_at"] == selected_date]
-        if search_query:
-            filtered_records = [r for r in filtered_records if search_query.lower() in r["model_name"].lower()]
-
-        filtered_records.sort(key=lambda x: x['rating'], reverse=True)
-
-        st.write("---")
-        st.subheader(f"Результаты сравнения ({len(filtered_records)} моделей)")
-
-        if filtered_records:
-            display_mode = st.radio("Формат отображения:", ["Вертикальный список", "Таблица"], horizontal=True)
-
-            if display_mode == "Вертикальный список":
-                for idx, record in enumerate(filtered_records):
-                    with st.container(border=True):
-                        col_rank, col_info, col_rating = st.columns([1, 5, 2])
-                        with col_rank:
-                            st.markdown(
-                                f"<span style='color:#9ca3af;font-size:0.9rem;'>#{idx + 1}</span>",
-                                unsafe_allow_html=True,
-                            )
-                        with col_info:
-                            st.markdown(f"**{record['model_name']}**")
-                            st.caption(
-                                f"{record['category'].upper()} · {record['fetched_at']}")
-                        with col_rating:
-                            st.markdown(
-                                f"<div style='font-size:1.5rem;font-weight:500;'>{record['rating']}</div>",
-                                unsafe_allow_html=True,
-                            )
-                            delta = record.get("delta")
-                            if delta is not None:
-                                if delta > 0:
-                                    st.markdown(
-                                        f"<span style='color:#059669;font-size:0.8rem;'>+{delta}</span>",
-                                        unsafe_allow_html=True,
-                                    )
-                                elif delta < 0:
-                                    st.markdown(
-                                        f"<span style='color:#dc2626;font-size:0.8rem;'>{delta}</span>",
-                                        unsafe_allow_html=True,
-                                    )
-                                else:
-                                    st.markdown(
-                                        "<span style='color:#9ca3af;font-size:0.8rem;'>0</span>",
-                                        unsafe_allow_html=True,
-                                    )
-            else:
-                df = pd.DataFrame(filtered_records)
-                df.insert(0, 'Место', range(1, len(df) + 1))
-                df['delta'] = df['delta'].apply(
-                    lambda d: ("—" if d is None else (f"+{d}" if d > 0 else str(d)))
-                )
-                df.columns = ["Место", "Дата снимка", "Категория", "Название модели", "Рейтинг (pts)", "Δ"]
-                st.dataframe(df, use_container_width=True, hide_index=True)
-        else:
-            st.warning("По выбранным критериям модели не найдены.")
-
-    elif api_response.get("status") == "connect_error":
-        st.error("FastAPI бэкенд не отвечает. Убедись, что запущен uvicorn.")
-    else:
-        st.warning("В базе данных пока нет снимков Арены.")
-
+        st.warning("В данной категории пока нет записей.")
 
 elif page == "Трендовые модели HF":
-    st.title("Трендовые модели Hugging Face")
-    st.caption("Источник: hf-trending-mcp · порядок как на huggingface.co/models (sort=trendingScore)")
+    st.markdown("<h1>Тренды Hugging Face</h1>", unsafe_allow_html=True)
 
-    if st.button("Обновить трендовые модели", type="primary"):
-        try:
-            try:
-                res = requests.post("http://localhost:8000/trending/refresh", timeout=5).json()
-            except requests.exceptions.ConnectionError:
-                res = requests.post("http://127.0.0.1:8000/trending/refresh", timeout=5).json()
+    models = trend_list
+    if search_hf:
+        models = [m for m in models if search_hf.lower() in m.get('model_name', '').lower()]
+    models = [m for m in models if m.get('downloads', 0) >= min_dl]
 
-            if res.get("status") == "success":
-                st.info("Сбор запущен в фоне. Подожди немного и обнови страницу.")
-            else:
-                st.error("Не удалось запустить сбор.")
-        except Exception as e:
-            st.error(f"Ошибка запроса к бэкенду: {e}")
+    if models:
+        sort_key = "downloads" if sort_by == "Скачиваниям" else "likes"
+        is_reverse = True if sort_order == "По убыванию" else False
 
-    st.write("---")
+        models = sorted(models, key=lambda x: x.get(sort_key, 0), reverse=is_reverse)
 
-    trending_response = fetch_trending()
-
-    if trending_response.get("status") == "success" and trending_response.get("data"):
-        models = trending_response["data"]
-
-        cols_per_row = 2
-        for i in range(0, len(models), cols_per_row):
-            row_models = models[i: i + cols_per_row]
-            cols = st.columns(cols_per_row)
-
-            for j, model in enumerate(row_models):
-                with cols[j]:
-                    with st.container(border=True):
-                        model_url = f"https://huggingface.co/{model['model_name']}"
-                        st.markdown(f"**[{model['model_name']}]({model_url})**")
-
-                        tags = model.get("tags", [])
-                        if tags:
-                            badges = " ".join(
-                                f"`{t}`" for t in tags[:4]
-                            )
-                            st.markdown(badges)
-
-                        col_downloads, col_likes = st.columns(2)
-                        with col_downloads:
-                            st.caption(f"⬇ {model.get('downloads', 0):,}".replace(",", " "))
-                        with col_likes:
-                            st.caption(f"♡ {model.get('likes', 0):,}".replace(",", " "))
-    elif trending_response.get("status") == "connect_error":
-        st.error("FastAPI бэкенд не отвечает. Убедись, что запущен uvicorn.")
+        for m in models[:30]:
+            model_name = m.get("model_name", "Unknown")
+            model_url = m.get("source_url") or f"https://huggingface.co/{model_name}"
+            st.markdown(
+                f'<div class="custom-card"><a href="{model_url}" target="_blank" style="text-decoration:none;"><strong style="font-size:1.1rem; color:#FFFFFF;">{model_name}</strong></a><div style="margin-top:8px; font-size:0.85rem; color:#A78BFA;"><span>⬇ Скачивания: {m.get("downloads", 0):,}</span> │ <span>♡ Лайки: {m.get("likes", 0):,}</span></div></div>',
+                unsafe_allow_html=True)
     else:
-        st.warning("Трендовые модели ещё не собраны — нажми «Обновить трендовые модели».")
-
+        st.info("Нет данных по заданным фильтрам.")
 
 elif page == "База статей":
-    st.title("Сохраненные статьи")
+    st.markdown("<h1>База сохраненных статей</h1>", unsafe_allow_html=True)
+    articles = article_list
 
-    st.button("Обновить статьи", use_container_width=True)
+    if search_art:
+        articles = [a for a in articles if
+                    search_art.lower() in a.get('title', '').lower() or search_art.lower() in a.get('summary',
+                                                                                                    '').lower()]
 
-    api_response = fetch_articles()
+    if selected_tags:
+        articles = [a for a in articles if any(t in selected_tags for t in a.get("tags", []))]
 
-    if api_response.get("status") == "success" and api_response.get("data"):
-        articles = api_response["data"]
+    if selected_types:
+        articles = [a for a in articles if a.get("source_type", "статья") in selected_types]
 
-        st.sidebar.header("Фильтры статей")
+    _TYPE_COLORS = {
+        "статья": "#8B5CF6",
+        "модель": "#22D3EE",
+        "датасет": "#F59E0B",
+        "репозиторий": "#34D399",
+    }
 
-        all_tags = set()
+    if articles:
         for a in articles:
-            tags = a.get('tags', [])
-            if isinstance(tags, list):
-                for t in tags:
-                    all_tags.add(t.strip().lower())
-        unique_tags = sorted(list(all_tags))
-
-        unique_dates = sorted(list(set(
-            a.get('added_at', '').split(' ')[0] for a in articles if a.get('added_at')
-        )), reverse=True)
-
-        selected_tag = st.sidebar.selectbox("Выберите тег:", ["Все теги"] + unique_tags)
-        selected_article_date = st.sidebar.selectbox("Дата добавления:", ["Все даты"] + unique_dates)
-        search_article = st.sidebar.text_input("Поиск по тексту:")
-
-        filtered_articles = articles
-
-        if selected_tag != "Все теги":
-            filtered_articles = [a for a in filtered_articles if
-                                 selected_tag in [t.strip().lower() for t in a.get('tags', [])]]
-
-        if selected_article_date != "Все даты":
-            filtered_articles = [a for a in filtered_articles if
-                                 a.get('added_at', '').startswith(selected_article_date)]
-
-        if search_article:
-            search_lower = search_article.lower()
-            filtered_articles = [
-                a for a in filtered_articles
-                if search_lower in a.get('title', '').lower() or search_lower in a.get('summary', '').lower()
-            ]
-
-        filtered_articles.sort(key=lambda x: x.get('added_at', ''), reverse=True)
-
-        st.write("---")
-        st.subheader(f"Результаты поиска ({len(filtered_articles)} статей)")
-
-        if filtered_articles:
-            cols_per_row = 2
-            for i in range(0, len(filtered_articles), cols_per_row):
-                row_articles = filtered_articles[i: i + cols_per_row]
-                cols = st.columns(cols_per_row)
-
-                for j, article in enumerate(row_articles):
-                    with cols[j]:
-                        with st.container(border=True):
-                            st.subheader(article.get('title', 'Без заголовка'))
-
-                            source = article.get('source_url', '#')
-                            date_str = article.get('added_at', '')
-                            st.caption(f"{date_str} | [Переход к источнику]({source})")
-
-                            st.divider()
-                            st.write(article.get('summary', 'Нет описания'))
-
-                            tags = article.get('tags', [])
-                            if tags:
-                                st.markdown(f"`{', '.join(tags)}`")
-        else:
-            st.warning("По вашим фильтрам статьи не найдены.")
-
-    elif api_response.get("status") == "connect_error":
-        st.error("FastAPI бэкенд не отвечает. Убедись, что запущен uvicorn.")
+            tags_html = "".join([f'<span class="article-tag">{t}</span>' for t in a.get("tags", [])])
+            source_url = a.get("source_url", "")
+            source_type = a.get("source_type", "статья")
+            type_color = _TYPE_COLORS.get(source_type, "#8B5CF6")
+            type_badge = f'<span style="font-size:0.7rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:{type_color}; border:1px solid {type_color}; border-radius:6px; padding:2px 8px; margin-right:8px;">{source_type}</span>'
+            link_html = (
+                f'<a href="{source_url}" target="_blank" style="font-size:0.85rem; color:#A78BFA; text-decoration:none;">Читать источник →</a>'
+                if source_url else ""
+            )
+            st.markdown(
+                f'<div class="custom-card"><div class="article-tags">{type_badge}{tags_html}</div><h4 style="margin:0; color:#FFFFFF;">{a.get("title")}</h4><p style="font-size:0.9rem; color:#D4D4D8; margin:8px 0;">{a.get("summary")}</p>{link_html}</div>',
+                unsafe_allow_html=True)
     else:
-        st.warning("В базе данных пока нет сохраненных статей.")
+        st.info("Материалы не найдены.")

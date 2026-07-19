@@ -18,9 +18,9 @@ from agent_manager import get_model
 load_dotenv()
 logger = logging.getLogger("mcp_fetcher")
 
-ARXIV_CANDIDATES_LIMIT = 15   # сколько статей запрашиваем у search_papers за один вызов
+ARXIV_CANDIDATES_LIMIT = 50   # сколько статей запрашиваем у search_papers за один вызов
 FINAL_ARTICLES_COUNT = 5
-FRESHNESS_WINDOW_DAYS = 3     # берём статьи, опубликованные не позже N дней назад
+FRESHNESS_WINDOW_DAYS = 5     # берём статьи, опубликованные не позже N дней назад (запас над 3-дневным циклом)
 
 DEFAULT_CATEGORIES = [
     "cs.AI",   # Artificial Intelligence

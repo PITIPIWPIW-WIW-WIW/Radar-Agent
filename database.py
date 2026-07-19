@@ -35,14 +35,20 @@ def init_db():
             source_url TEXT NOT NULL,
             tags TEXT NOT NULL,
             source_type TEXT NOT NULL DEFAULT 'статья',
+            language TEXT NOT NULL DEFAULT '',
             added_at TEXT DEFAULT CURRENT_TIMESTAMP
         );""")
 
-        # Миграция для БД, созданных до появления source_type — CREATE TABLE
-        # IF NOT EXISTS не добавит колонку в уже существующую таблицу.
+        # Миграция для БД, созданных до появления source_type/language — CREATE
+        # TABLE IF NOT EXISTS не добавит колонку в уже существующую таблицу.
         existing_cols = {row['name'] for row in cursor.execute("PRAGMA table_info(articles)")}
         if 'source_type' not in existing_cols:
             cursor.execute("ALTER TABLE articles ADD COLUMN source_type TEXT NOT NULL DEFAULT 'статья'")
+        if 'language' not in existing_cols:
+            # Сейчас реально заполняется только для HF-датасетов (см.
+            # FetcherHFDatasets.py) — используется для фильтра по языку
+            # во вкладке "Датасеты". Для остальных типов остаётся пустым.
+            cursor.execute("ALTER TABLE articles ADD COLUMN language TEXT NOT NULL DEFAULT ''")
         cursor.execute('''CREATE TABLE IF NOT EXISTS leaderboard (
             category TEXT NOT NULL,
             model_name TEXT NOT NULL,
@@ -61,13 +67,16 @@ def init_db():
             likes INTEGER NOT NULL,
             tags TEXT NOT NULL,
             source_url TEXT NOT NULL DEFAULT '',
+            summary TEXT NOT NULL DEFAULT '',
             fetched_at TEXT DEFAULT CURRENT_TIMESTAMP
         );''')
 
-        # Миграция для БД, созданных до появления source_url в hf_trending
+        # Миграция для БД, созданных до появления source_url/summary в hf_trending
         trending_cols = {row['name'] for row in cursor.execute("PRAGMA table_info(hf_trending)")}
         if 'source_url' not in trending_cols:
             cursor.execute("ALTER TABLE hf_trending ADD COLUMN source_url TEXT NOT NULL DEFAULT ''")
+        if 'summary' not in trending_cols:
+            cursor.execute("ALTER TABLE hf_trending ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
         conn.commit()
 
 
@@ -93,14 +102,15 @@ def save_article(article: dict) -> None:
     # по умолчанию считаем это обычной статьёй, чтобы не сломать старые вызовы.
     with get_connection() as conn:
         conn.execute('''
-            INSERT INTO articles (title, summary, source_url, tags, source_type)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO articles (title, summary, source_url, tags, source_type, language)
+            VALUES (?, ?, ?, ?, ?, ?)
         ''', (
             article['title'],
             article['summary'],
             article['source_url'],
             json.dumps(article['tags']),
             article.get('source_type', 'статья'),
+            article.get('language', ''),
         ))
 
 
@@ -203,14 +213,14 @@ def get_analysis_history(limit: int = 10) -> list[dict]:
 def save_trending_models(models: list[dict]) -> None:
     """
     Полностью заменяет предыдущую витрину трендовых моделей новой.
-    models: [{"name": str, "downloads": int, "likes": int, "tags": list[str], "url": str}, ...]
+    models: [{"name": str, "downloads": int, "likes": int, "tags": list[str], "url": str, "summary": str}, ...]
     """
     fetched_at = datetime.utcnow().isoformat()
     with get_connection() as conn:
         conn.execute('DELETE FROM hf_trending')
         conn.executemany('''
-            INSERT INTO hf_trending (model_name, downloads, likes, tags, source_url, fetched_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO hf_trending (model_name, downloads, likes, tags, source_url, summary, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         ''', [
             (
                 m["name"],
@@ -219,6 +229,9 @@ def save_trending_models(models: list[dict]) -> None:
                 json.dumps(m["tags"]),
                 # url может не прийти со старых вызовов — считаем сами по имени модели
                 m.get("url") or f"https://huggingface.co/{m['name']}",
+                # если LLM-саммари не удалось сгенерировать (ошибка/рейт-лимит) —
+                # не роняем весь прогон, просто сохраняем пустую строку
+                m.get("summary") or "",
                 fetched_at,
             )
             for m in models

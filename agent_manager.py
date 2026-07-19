@@ -174,6 +174,59 @@ def analyze_leaderboard(
         raise AnalysisError(f"Не удалось проанализировать лидерборд: {e!r}") from e
 
 
+class TrendingModelSummary(BaseModel):
+    """Короткое саммари для карточки трендовой модели HF."""
+    summary: str = Field(description="1-2 предложения о том, что это за модель и для чего она нужна")
+
+
+TRENDING_MODEL_SYSTEM_PROMPT = """
+Ты — эксперт по машинному обучению. Тебе дают название модели с Hugging Face
+и её теги (архитектура, задача, библиотека и т.п.).
+Твоя задача — по названию и тегам кратко (1-2 предложения) объяснить, что это
+за модель и для чего она обычно используется. Если по названию и тегам нельзя
+понять что-то конкретное — дай общее, но честное предположение, без выдумывания
+несуществующих фактов (бенчмарков, авторов, конкретных цифр).
+Отвечай строго в структурированном виде, без лишнего текста.
+"""
+
+
+def _get_trending_model_agent() -> Agent:
+    return Agent(
+        model=get_model(),
+        output_type=TrendingModelSummary,
+        system_prompt=TRENDING_MODEL_SYSTEM_PROMPT,
+    )
+
+
+@retry(
+    retry=retry_if_exception(_is_retryable_error),
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=30),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
+def _call_trending_model_agent(prompt: str):
+    return _get_trending_model_agent().run_sync(prompt)
+
+
+def summarize_trending_model(name: str, tags: list[str]) -> str:
+    """
+    Генерирует короткое саммари для трендовой модели HF по названию и тегам
+    (без скачивания карточки модели — только то, что уже есть от hf-trending-mcp).
+    При ошибке кидает AnalysisError; вызывающий код (fetch_trending_models)
+    сам решает, что делать — обычно просто оставляет пустое саммари и не
+    роняет весь прогон из-за одной модели.
+    """
+    tags_str = ", ".join(tags) if tags else "(теги отсутствуют)"
+    prompt = f"Название модели: {name}\nТеги: {tags_str}"
+    try:
+        result = _call_trending_model_agent(prompt)
+        return result.output.summary
+    except Exception as e:
+        logger.error(f"Ошибка саммари трендовой модели '{name}': {e!r}")
+        raise AnalysisError(f"Не удалось получить саммари для модели '{name}': {e!r}") from e
+
+
 def analyze_article(title: str, text: str) -> ArticleAnalysis:
     """
     Синхронная обертка над агентом.

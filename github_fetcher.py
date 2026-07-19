@@ -80,7 +80,7 @@ def _get_github_agent():
         )
     )
 
-async def fetch_github_trending(days_back: int = 7, limit: int = 15, language: str = "Python") -> list[dict]:
+async def fetch_github_trending(days_back: int = 10, limit: int = 50, language: str = "Python") -> list[dict]:
 
     articles_payload = []
     
@@ -202,7 +202,7 @@ async def fetch_github_trending(days_back: int = 7, limit: int = 15, language: s
 
 
 
-def stream_github_articles(days_back: int = 7, limit: int = 15, language: str = "Python"):
+def stream_github_articles(days_back: int = 10, limit: int = 50, language: str = "Python"):
     """Синхронный генератор-адаптер над fetch_github_trending()."""
     articles = asyncio.run(fetch_github_trending(days_back, limit, language))
     for article in articles:

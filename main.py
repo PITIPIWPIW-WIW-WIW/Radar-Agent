@@ -102,7 +102,7 @@ def stream_all_new_articles():
 # через /trending/refresh — теперь синхронизируем и при прогоне main.py.
 def _refresh_trending_models():
     try:
-        models = fetch_trending_models(limit=15)
+        models = fetch_trending_models(limit=30)
         if not models:
             logger.info("Трендовые модели HF не получены (пусто или MCP-сервер недоступен).")
             return
@@ -187,6 +187,9 @@ def main():
             "source_url": source_url,
             "tags": analysis.tags,  # список строк — database.py сам делает json.dumps
             "source_type": article.get("source_type", "статья"),
+            # Заполнено только у HF-датасетов (см. FetcherHFDatasets.py),
+            # у остальных источников остаётся пустой строкой
+            "language": article.get("language", ""),
         }
         save_article(payload)
         processed += 1

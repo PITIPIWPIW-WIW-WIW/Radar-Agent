@@ -19,9 +19,9 @@ logger = logging.getLogger("mcp_fetcher")
 
 KAGGLE_BASE_URL = "https://www.kaggle.com"
 
-CANDIDATES_PER_TYPE = 8
+CANDIDATES_PER_TYPE = 20
 FINAL_MATERIALS_COUNT = 5
-FRESHNESS_TOP_N = 10  # сколько самых свежих кандидатов (по реальной дате) отдаём на тематический отбор LLM
+FRESHNESS_TOP_N = 20  # сколько самых свежих кандидатов (по реальной дате) отдаём на тематический отбор LLM
 
 
 # --- Схема данных: LLM отвечает ТОЛЬКО за тематический отбор id ---

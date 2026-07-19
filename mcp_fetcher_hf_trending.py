@@ -80,7 +80,27 @@ async def _call_get_trending_models(limit: int) -> str:
             return raw
 
 
-def fetch_trending_models(limit: int = 15) -> list[dict]:
+def _enrich_with_summaries(models: list[dict]) -> list[dict]:
+    """
+    Дописывает каждой модели короткое LLM-саммари (по имени + тегам).
+    Отдельная ошибка/рейт-лимит на одной модели не должна ронять всю
+    витрину — если саммари не получилось, оставляем пустую строку,
+    остальные поля (downloads/likes/tags) при этом сохраняются как есть.
+    """
+    # Импорт внутри функции — чтобы просто импортировать модуль (например,
+    # в тестах) не тянуло за собой pydantic_ai и не требовало MISTRAL_API_KEY.
+    from agent_manager import summarize_trending_model, AnalysisError
+
+    for model in models:
+        try:
+            model["summary"] = summarize_trending_model(model["name"], model.get("tags", []))
+        except AnalysisError as e:
+            logger.warning(f"Саммари для модели '{model['name']}' не получено: {e}")
+            model["summary"] = ""
+    return models
+
+
+def fetch_trending_models(limit: int = 30) -> list[dict]:
     try:
         raw_text = asyncio.run(_call_get_trending_models(limit))
     except Exception as e:
@@ -90,7 +110,8 @@ def fetch_trending_models(limit: int = 15) -> list[dict]:
     if not raw_text:
         return []
 
-    return _parse_trending_text(raw_text)
+    models = _parse_trending_text(raw_text)
+    return _enrich_with_summaries(models)
 
 
 if __name__ == "__main__":

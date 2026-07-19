@@ -24,14 +24,7 @@ except ImportError:
 # Настройки логирования
 load_dotenv()
 logger = logging.getLogger("hf_fetcher")
-# ВАЖНО: НЕ вызываем basicConfig() на уровне модуля — main.py импортирует
-# этот файл раньше, чем успевает отработать main.setup_logging(), и Python
-# молча игнорирует все последующие basicConfig()-вызовы. Раньше это намертво
-# запирало LOG_LEVEL из .env на INFO для всего приложения. Настройка для
-# прямого запуска — в блоке if __name__ == "__main__" в конце файла.
 
-# === ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМА ===
-# Установи False, когда команда закончит работу над LLM-агентом
 IS_TEST_MODE = False
 
 
@@ -186,7 +179,7 @@ async def fetch_hf_materials_via_mcp(query: str = "text-generation") -> list[dic
                 await session.initialize()
                 
                 # Шаг 1: Поиск
-                search_args = {"query": query, "limit": 15}
+                search_args = {"query": query, "limit": 40}
                 raw_list = await _call_tool(session, "search-models", search_args)
                 models_data = json.loads(raw_list)
                 

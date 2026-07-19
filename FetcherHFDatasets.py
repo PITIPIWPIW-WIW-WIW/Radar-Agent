@@ -166,6 +166,37 @@ def _parse_hf_date(raw: dict) -> datetime | None:
     return None
 
 
+def _extract_languages(raw: dict) -> str:
+    """
+    Достаёт языки датасета из сырого ответа search-datasets.
+    HF отдаёт язык по-разному в зависимости от версии MCP-сервера: то отдельным
+    полем "language" (строка или список), то тегами вида "language:en" внутри
+    общего списка "tags" — проверяем оба варианта и объединяем результат.
+    """
+    langs: list[str] = []
+
+    raw_lang = raw.get("language")
+    if isinstance(raw_lang, str) and raw_lang:
+        langs.append(raw_lang)
+    elif isinstance(raw_lang, list):
+        langs.extend(str(l) for l in raw_lang if l)
+
+    for tag in raw.get("tags", []) or []:
+        if isinstance(tag, str) and tag.startswith("language:"):
+            langs.append(tag.split(":", 1)[1])
+
+    # Дедуп с сохранением порядка, без учёта регистра
+    seen = set()
+    unique_langs = []
+    for lang in langs:
+        key = lang.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            unique_langs.append(key)
+
+    return ", ".join(unique_langs)
+
+
 def _cap_per_owner(candidates: list[dict], max_per_owner: int) -> list[dict]:
     by_owner: dict[str, list[dict]] = {}
     for c in candidates:
@@ -202,7 +233,7 @@ async def fetch_hf_datasets_via_mcp(query: str = "machine learning") -> list[dic
                 seen_ids = set()
                 datasets_data = []
                 for q in search_queries:
-                    search_args = {"query": q, "limit": 30, "sort": "lastModified", "direction": -1}
+                    search_args = {"query": q, "limit": 60, "sort": "lastModified", "direction": -1}
                     raw_list = await _call_tool(session, "search-datasets", search_args)
                     try:
                         page = json.loads(raw_list)
@@ -244,6 +275,7 @@ async def fetch_hf_datasets_via_mcp(query: str = "machine learning") -> list[dic
                         "full_text": clean_text,
                         "url": f"https://huggingface.co/datasets/{dataset_id}",
                         "last_modified": last_modified,
+                        "language": _extract_languages(dataset),
                     })
 
                 all_candidates = _cap_per_owner(all_candidates, max_per_owner=2)
@@ -295,6 +327,7 @@ async def fetch_hf_datasets_via_mcp(query: str = "machine learning") -> list[dic
                         "title": f"[HF Dataset] {original['title']}",
                         "text": f"Датасет: {original['title']}\n\nОписание:\n{item.russian_translation}",
                         "source_url": original["url"],
+                        "language": original.get("language", ""),
                     })
                     
                 logger.info("Агент завершил работу за %.2fs", time.perf_counter() - start_time)
